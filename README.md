@@ -187,10 +187,6 @@ The same values can be changed from Radio's gear menu. The default proxy timeout
 
 Run `SETUP-RADIO-WINDOWS.bat` again. The current setup uses the model directory as `path` and writes the Yue2 and VAE settings as relative filenames.
 
-### `Yue2 requires non-empty style`
-
-Use Radio v0.4.0 or newer. Current versions send the non-empty station style inside Yue2's request `options` object.
-
 ### LM Studio is offline
 
 Load a model, open LM Studio's Developer screen, confirm that the server is running on port `1234`, and then use **Test connections** in Radio.
