@@ -1,6 +1,6 @@
-# Radio — local AI music stations
+# YuE2-Radio — local AI music stations
 
-Radio is a local-first web app that continuously creates original songs on your computer. Pick a genre station and vocal language, then let Radio write lyrics through **LM Studio** and render complete music with **Yue2-3B** through **audio.cpp**.
+YuE2-Radio is a local-first web app that continuously creates original songs on your computer. Pick a genre station and vocal language, then let Radio write lyrics through **LM Studio** and render complete music with **Yue2-3B** through **audio.cpp**.
 
 No cloud API key is required. The language model, music model, generated lyrics, and audio stay on the endpoints you configure—normally your own PC.
 
