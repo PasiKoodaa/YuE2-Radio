@@ -24,7 +24,6 @@ No cloud API key is required. The language model, music model, generated lyrics,
 - Separate Queue and History tabs; History remembers the last 25 previous songs locally.
 - Save the current song or any queued song as a WAV file.
 - Cancel stops the active request and pauses automatic queue filling.
-- Fixed, scrollable lyrics panel that does not stretch the page.
 - Guided Windows 10 setup with Q4 and Q8 Yue2 download options.
 - Dependency-free Node.js app server for Windows, macOS, and Linux.
 
