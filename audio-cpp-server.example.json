@@ -1,0 +1,26 @@
+{
+  "host": "127.0.0.1",
+  "port": 8080,
+  "backend": "cuda",
+  "device": 0,
+  "threads": 8,
+  "lazy_load": true,
+  "busy_timeout_ms": 1200000,
+  "models": [
+    {
+      "id": "yue2-radio",
+      "family": "yue2",
+      "path": "/absolute/path/to/Yue2-3B-GGUF",
+      "task": "gen",
+      "mode": "offline",
+      "session_options": {
+        "yue2.model_gguf": "yue2-3b-q4_0.gguf",
+        "yue2.vae_gguf": "yue2-vae-f16.gguf"
+      },
+      "default_request_options": {
+        "cot": "off",
+        "num_inference_steps": 8
+      }
+    }
+  ]
+}

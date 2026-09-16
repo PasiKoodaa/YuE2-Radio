@@ -1,0 +1,6 @@
+{
+  "port": 4173,
+  "lmStudioBaseUrl": "http://127.0.0.1:1234",
+  "audioCppBaseUrl": "http://127.0.0.1:8080",
+  "proxyTimeoutMs": 1200000
+}

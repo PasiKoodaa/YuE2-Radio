@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#11110f" />
+    <meta
+      name="description"
+      content="A private, local-first AI radio powered by LM Studio and Yue2 through audio.cpp."
+    />
+    <title>Radio — Local AI airwaves</title>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%2311110f'/%3E%3Ccircle cx='32' cy='32' r='19' fill='none' stroke='%23ff4d32' stroke-width='5'/%3E%3Ccircle cx='32' cy='32' r='6' fill='%23f4efe3'/%3E%3Cpath d='M32 5v8M32 51v8M5 32h8M51 32h8' stroke='%23f4efe3' stroke-width='4' stroke-linecap='round'/%3E%3C/svg%3E" />
+    <link rel="stylesheet" href="./styles.css?v=0.5.1" />
+  </head>
+  <body>
+    <div class="shell">
+      <header class="topbar">
+        <a class="brand" href="#" aria-label="Radio home">
+          <span class="brand-mark" aria-hidden="true"><i></i></span>
+          <span>RADIO</span>
+          <small>LOCAL AIRWAVES</small>
+        </a>
+
+        <div class="service-status" aria-label="Local service connection status">
+          <button class="status-pill" id="lmStatus" type="button" data-service="lm">
+            <span class="status-light"></span>
+            <span><b>LM STUDIO</b><small>Not checked</small></span>
+          </button>
+          <button class="status-pill" id="audioStatus" type="button" data-service="audio">
+            <span class="status-light"></span>
+            <span><b>AUDIO.CPP</b><small>Not checked</small></span>
+          </button>
+        </div>
+
+        <button class="icon-button settings-button" id="openSettings" type="button" aria-label="Open connection settings">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.2a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4Z"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1-2.9 2.9-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5v.2H10v-.2a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1-2.9-2.9.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3v-4h.1a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1 2.9-2.9.1.1A1.6 1.6 0 0 0 9 4.6a1.6 1.6 0 0 0 1-1.5V3h4v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1 2.9 2.9-.1.1a1.6 1.6 0 0 0-.3 1.8 1.6 1.6 0 0 0 1.5 1h.1v4h-.1a1.6 1.6 0 0 0-1.5 1Z"/></svg>
+        </button>
+      </header>
+
+      <main class="radio-grid">
+        <aside class="stations-panel" aria-labelledby="stationsTitle">
+          <div class="section-heading">
+            <span id="stationsTitle">STATIONS</span>
+            <span id="stationCount">10</span>
+          </div>
+          <nav class="station-list" id="stationList" aria-label="Radio stations"></nav>
+          <div class="privacy-note">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 22s8-3.5 8-10V5l-8-3-8 3v7c0 6.5 8 10 8 10Z"/><path d="m9 12 2 2 4-5"/></svg>
+            <p><strong>Your songs stay local.</strong><br />Lyrics and audio are sent only to the endpoints you configure.</p>
+          </div>
+        </aside>
+
+        <section class="player-panel" aria-labelledby="nowPlayingTitle">
+          <div class="broadcast-line">
+            <span class="live-badge"><i></i> LIVE</span>
+            <span id="stationLocation">FROM YOUR MACHINE</span>
+          </div>
+
+          <div class="tuner-wrap">
+            <div class="signal-orbit orbit-one"></div>
+            <div class="signal-orbit orbit-two"></div>
+            <div class="tuner" id="tuner" aria-hidden="true">
+              <div class="tuner-scale"></div>
+              <div class="tuner-inner">
+                <small>FM</small>
+                <strong id="frequency">88.3</strong>
+                <span>MHz</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="track-copy">
+            <p class="eyebrow" id="stationGenre">SYNTH POP · NIGHT DRIVE</p>
+            <h1 id="nowPlayingTitle">Afterglow FM</h1>
+            <p id="trackTitle">Ready for a new transmission</p>
+          </div>
+
+          <div class="waveform" id="waveform" aria-label="Audio activity">
+            <span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span>
+          </div>
+
+          <div class="player-controls">
+            <button class="control secondary" id="previousStation" type="button" aria-label="Previous station">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5v14M18 6l-8 6 8 6V6Z"/></svg>
+            </button>
+            <button class="play-button" id="playButton" type="button" aria-label="Generate and play this station">
+              <svg class="play-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m8 5 11 7-11 7V5Z"/></svg>
+              <svg class="pause-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14M16 5v14"/></svg>
+              <span class="spinner" aria-hidden="true"></span>
+            </button>
+            <button class="control secondary" id="nextStation" type="button" aria-label="Next station">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 5v14M6 6l8 6-8 6V6Z"/></svg>
+            </button>
+          </div>
+
+          <div class="progress-row">
+            <span id="elapsedTime">0:00</span>
+            <div class="progress-track" id="progressTrack" role="slider" tabindex="0" aria-label="Song progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="progressFill"></i></div>
+            <span id="durationTime">—:—</span>
+          </div>
+
+          <div class="generation-status" id="generationStatus" role="status" aria-live="polite" hidden>
+            <div class="status-copy">
+              <span id="generationStage">WRITING LYRICS</span>
+              <small id="generationDetail">LM Studio is drafting a new song…</small>
+            </div>
+            <button id="cancelGeneration" type="button">CANCEL</button>
+            <div class="status-progress"><i></i></div>
+          </div>
+
+          <div class="player-footer">
+            <label class="language-field" for="languageSelect">
+              <span>VOCALS</span>
+              <select id="languageSelect">
+                <option value="English">English</option>
+                <option value="Spanish">Español</option>
+                <option value="French">Français</option>
+                <option value="Japanese">日本語</option>
+                <option value="Korean">한국어</option>
+                <option value="Portuguese">Português</option>
+                <option value="Finnish">Suomi</option>
+              </select>
+            </label>
+
+            <button class="generate-button" id="generateButton" type="button">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 1.4 4.6L18 9l-4.6 1.4L12 15l-1.4-4.6L6 9l4.6-1.4L12 3ZM19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8L19 15Z"/></svg>
+              <span>MAKE NEXT SONG</span>
+            </button>
+
+            <div class="footer-actions">
+              <button class="continuous-toggle active" id="continuousToggle" type="button" aria-pressed="true" title="Automatically prepare and play another song">
+                <i aria-hidden="true"></i><span>CONTINUOUS</span>
+              </button>
+              <label class="queue-depth-field" for="queueTarget">
+                <span>SONGS AHEAD</span>
+                <select id="queueTarget" aria-label="Number of songs to prepare ahead">
+                  <option value="1">1</option>
+                  <option value="2" selected>2</option>
+                  <option value="3">3</option>
+                </select>
+              </label>
+              <label class="volume-field" for="volumeControl">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5 6 9H3v6h3l5 4V5ZM15 9a4 4 0 0 1 0 6M18 6a8 8 0 0 1 0 12"/></svg>
+                <input id="volumeControl" type="range" min="0" max="1" step="0.01" value="0.8" aria-label="Volume" />
+              </label>
+            </div>
+          </div>
+
+          <audio id="audioPlayer" preload="metadata"></audio>
+        </section>
+
+        <aside class="details-panel">
+          <div class="details-tabs" role="tablist" aria-label="Song details">
+            <button class="active" id="lyricsTab" type="button" role="tab" aria-selected="true" aria-controls="lyricsPanel">LYRICS</button>
+            <button id="queueTab" type="button" role="tab" aria-selected="false" aria-controls="queuePanel">QUEUE <span id="queueCount">0</span></button>
+            <button id="historyTab" type="button" role="tab" aria-selected="false" aria-controls="historyPanel">HISTORY <span id="historyCount">0</span></button>
+          </div>
+
+          <section class="lyrics-panel" id="lyricsPanel" role="tabpanel" aria-labelledby="lyricsTab">
+            <div class="lyrics-meta">
+              <span id="lyricsLanguage">ENGLISH</span>
+              <div class="lyrics-actions">
+                <button id="saveSong" type="button" disabled aria-label="Save current song as WAV">SAVE WAV</button>
+                <button id="copyLyrics" type="button" aria-label="Copy lyrics">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="11" height="11" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>
+                </button>
+              </div>
+            </div>
+            <div class="lyrics-content" id="lyricsContent">
+              <p class="verse-label">[TUNING IN]</p>
+              <p>Select a station and make the next song. LM Studio will write original lyrics here before Yue2 turns them into audio.</p>
+            </div>
+          </section>
+
+          <section class="queue-panel" id="queuePanel" role="tabpanel" aria-labelledby="queueTab" hidden>
+            <div class="empty-history" id="emptyQueue">
+              <span>00</span>
+              <p>No songs are queued yet.<br />Continuous mode fills the queue while music plays.</p>
+            </div>
+            <ol id="queueList"></ol>
+          </section>
+
+          <section class="history-panel" id="historyPanel" role="tabpanel" aria-labelledby="historyTab" hidden>
+            <div class="empty-history" id="emptyHistory">
+              <span>00</span>
+              <p>No previous songs yet.<br />Finished songs appear here.</p>
+            </div>
+            <ol id="historyList"></ol>
+          </section>
+
+          <div class="model-credit">
+            <span>POWERED LOCALLY BY</span>
+            <a href="https://huggingface.co/audio-cpp/Yue2-3B-GGUF" target="_blank" rel="noreferrer">YUE2–3B GGUF ↗</a>
+          </div>
+        </aside>
+      </main>
+    </div>
+
+    <dialog class="settings-dialog" id="settingsDialog">
+      <form method="dialog" class="settings-card" id="settingsForm">
+        <div class="dialog-heading">
+          <div><span>LOCAL CONNECTIONS</span><h2>Connect your radio</h2></div>
+          <button class="icon-button" value="cancel" aria-label="Close settings" type="submit">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>
+          </button>
+        </div>
+
+        <p class="dialog-intro">Radio talks directly to services running on this machine. Nothing is uploaded by the app.</p>
+
+        <label class="setting-field" for="lmEndpoint">
+          <span><b>LM Studio endpoint</b><small>OpenAI-compatible local server</small></span>
+          <input id="lmEndpoint" type="text" value="/proxy/lm/v1" spellcheck="false" />
+        </label>
+        <label class="setting-field" for="lmModel">
+          <span><b>Lyrics model</b><small>Leave on Auto to use the first loaded model</small></span>
+          <input id="lmModel" type="text" value="Auto" spellcheck="false" />
+        </label>
+        <label class="setting-field" for="audioEndpoint">
+          <span><b>audio.cpp endpoint</b><small>Yue2 local server or included proxy</small></span>
+          <input id="audioEndpoint" type="text" value="/proxy/audio" spellcheck="false" />
+        </label>
+        <label class="setting-field" for="audioModel">
+          <span><b>Yue2 model ID</b><small>Must match the ID in server.json</small></span>
+          <input id="audioModel" type="text" value="yue2-radio" spellcheck="false" />
+        </label>
+
+        <div class="settings-section-heading">
+          <span>CUSTOM RADIO</span>
+          <small>Saved only in this browser</small>
+        </div>
+        <label class="setting-field" for="customName">
+          <span><b>Station name</b><small>For example Arctic Echo FM</small></span>
+          <input id="customName" type="text" maxlength="48" placeholder="My custom station" />
+        </label>
+        <label class="setting-field" for="customGenre">
+          <span><b>Genre</b><small>The station’s main musical identity</small></span>
+          <input id="customGenre" type="text" maxlength="80" placeholder="Nordic indie rock" />
+        </label>
+        <label class="setting-field" for="customMood">
+          <span><b>Mood</b><small>Emotional direction for the lyrics</small></span>
+          <input id="customMood" type="text" maxlength="80" placeholder="Winter night, hopeful" />
+        </label>
+        <label class="setting-field" for="customStyle">
+          <span><b>Sound and instruments</b><small>Required Yue2 style prompt</small></span>
+          <textarea id="customStyle" rows="3" maxlength="500" placeholder="Atmospheric guitars, live drums, warm bass, intimate lead vocal, wide chorus"></textarea>
+        </label>
+        <label class="setting-field" for="customKeywords">
+          <span><b>Extra rotating ideas</b><small>Comma-separated themes or production details</small></span>
+          <input id="customKeywords" type="text" maxlength="300" placeholder="snowfall, northern lights, tape warmth" />
+        </label>
+
+        <div class="connection-result" id="connectionResult" role="status" aria-live="polite">Ready to test both services.</div>
+
+        <div class="dialog-actions">
+          <button class="ghost-button" id="testConnections" type="button">TEST CONNECTIONS</button>
+          <button class="save-button" id="saveSettings" value="default" type="submit">SAVE &amp; CLOSE</button>
+        </div>
+
+        <details class="setup-help">
+          <summary>Local setup checklist</summary>
+          <ol>
+            <li>Start LM Studio’s local server with any instruction-capable text model loaded.</li>
+            <li>Run <code>audiocpp_server</code> with a Yue2 model entry. The downloadable package configures this for you.</li>
+            <li>Keep this page open while a song generates; Yue2 can take several minutes on some hardware.</li>
+          </ol>
+        </details>
+      </form>
+    </dialog>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+    <script src="./app.js?v=0.5.1" type="module"></script>
+  </body>
+</html>
