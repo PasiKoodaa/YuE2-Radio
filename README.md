@@ -20,7 +20,13 @@ No cloud API key is required. The language model, music model, generated lyrics,
 - English, Spanish, French, Japanese, Korean, Portuguese, and Finnish vocals.
 - Lyrics are checked for required section syntax and minimum length, with up to three generation attempts.
 - Yue2 audio generation is retried up to three times after recoverable failures.
-- Continuous mode prepares a configurable queue of 1–3 finished songs while the current song plays.
+- Continuous mode prepares a configurable queue of 1–5 finished songs while the current song plays.
+- Persistent playback recovery restores the current song, playback position, queue, and interrupted background work after a restart.
+- Adjustable 0–8 second crossfades and automatic per-song loudness correction create smoother transitions.
+- Focused, Balanced, and Experimental variety modes avoid recently used topics, images, motifs, tempos, instrumental colors, titles, and overly similar lyrics.
+- Run one or two local generation jobs, or pause queue filling without stopping playback.
+- Listener Requests place a topic into an upcoming song and show which queued song received it.
+- A searchable local Library keeps completed audio, lyrics, prompts, favorites, and metadata in the browser; replay, regenerate, export, or delete songs there.
 - Separate Queue and History tabs; History remembers the last 25 previous songs locally.
 - Save the current song or any queued song as a WAV file, or choose a folder to auto-save every completed song.
 - Cancel stops the active request and pauses automatic queue filling.
