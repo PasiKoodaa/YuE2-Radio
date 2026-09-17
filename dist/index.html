@@ -10,7 +10,7 @@
     />
     <title>Radio — Local AI airwaves</title>
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%2311110f'/%3E%3Ccircle cx='32' cy='32' r='19' fill='none' stroke='%23ff4d32' stroke-width='5'/%3E%3Ccircle cx='32' cy='32' r='6' fill='%23f4efe3'/%3E%3Cpath d='M32 5v8M32 51v8M5 32h8M51 32h8' stroke='%23f4efe3' stroke-width='4' stroke-linecap='round'/%3E%3C/svg%3E" />
-    <link rel="stylesheet" href="./styles.css?v=0.5.1" />
+    <link rel="stylesheet" href="./styles.css?v=0.6.0" />
   </head>
   <body>
     <div class="shell">
@@ -160,6 +160,7 @@
             <div class="lyrics-meta">
               <span id="lyricsLanguage">ENGLISH</span>
               <div class="lyrics-actions">
+                <button class="auto-save-button" id="autoSaveToggle" type="button" aria-pressed="false" title="Choose a folder and automatically save every new song">AUTO-SAVE OFF</button>
                 <button id="saveSong" type="button" disabled aria-label="Save current song as WAV">SAVE WAV</button>
                 <button id="copyLyrics" type="button" aria-label="Copy lyrics">
                   <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="11" height="11" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>
@@ -205,54 +206,62 @@
           </button>
         </div>
 
-        <p class="dialog-intro">Radio talks directly to services running on this machine. Nothing is uploaded by the app.</p>
+        <p class="dialog-intro">Configure the two local engines, then shape your own station. Nothing is uploaded by Radio.</p>
 
-        <label class="setting-field" for="lmEndpoint">
-          <span><b>LM Studio endpoint</b><small>OpenAI-compatible local server</small></span>
-          <input id="lmEndpoint" type="text" value="/proxy/lm/v1" spellcheck="false" />
-        </label>
-        <label class="setting-field" for="lmModel">
-          <span><b>Lyrics model</b><small>Leave on Auto to use the first loaded model</small></span>
-          <input id="lmModel" type="text" value="Auto" spellcheck="false" />
-        </label>
-        <label class="setting-field" for="audioEndpoint">
-          <span><b>audio.cpp endpoint</b><small>Yue2 local server or included proxy</small></span>
-          <input id="audioEndpoint" type="text" value="/proxy/audio" spellcheck="false" />
-        </label>
-        <label class="setting-field" for="audioModel">
-          <span><b>Yue2 model ID</b><small>Must match the ID in server.json</small></span>
-          <input id="audioModel" type="text" value="yue2-radio" spellcheck="false" />
-        </label>
+        <section class="settings-group" aria-labelledby="connectionsHeading">
+          <div class="settings-section-heading first">
+            <div><span id="connectionsHeading">LOCAL ENGINES</span><small>Lyrics and music generation</small></div>
+            <button class="section-action" id="testConnections" type="button">TEST CONNECTIONS</button>
+          </div>
+          <label class="setting-field" for="lmEndpoint">
+            <span><b>LM Studio endpoint</b><small>OpenAI-compatible local server</small></span>
+            <input id="lmEndpoint" type="text" value="/proxy/lm/v1" spellcheck="false" />
+          </label>
+          <label class="setting-field" for="lmModel">
+            <span><b>Lyrics model</b><small>Leave on Auto to use the first loaded model</small></span>
+            <input id="lmModel" type="text" value="Auto" spellcheck="false" />
+          </label>
+          <label class="setting-field" for="audioEndpoint">
+            <span><b>audio.cpp endpoint</b><small>Yue2 local server or included proxy</small></span>
+            <input id="audioEndpoint" type="text" value="/proxy/audio" spellcheck="false" />
+          </label>
+          <label class="setting-field" for="audioModel">
+            <span><b>Yue2 model ID</b><small>Must match the ID in server.json</small></span>
+            <input id="audioModel" type="text" value="yue2-radio" spellcheck="false" />
+          </label>
+          <div class="connection-result" id="connectionResult" role="status" aria-live="polite">Ready to test both services.</div>
+        </section>
 
-        <div class="settings-section-heading">
-          <span>CUSTOM RADIO</span>
-          <small>Saved only in this browser</small>
-        </div>
-        <label class="setting-field" for="customName">
-          <span><b>Station name</b><small>For example Arctic Echo FM</small></span>
-          <input id="customName" type="text" maxlength="48" placeholder="My custom station" />
-        </label>
-        <label class="setting-field" for="customGenre">
-          <span><b>Genre</b><small>The station’s main musical identity</small></span>
-          <input id="customGenre" type="text" maxlength="80" placeholder="Nordic indie rock" />
-        </label>
-        <label class="setting-field" for="customMood">
-          <span><b>Mood</b><small>Emotional direction for the lyrics</small></span>
-          <input id="customMood" type="text" maxlength="80" placeholder="Winter night, hopeful" />
-        </label>
-        <label class="setting-field" for="customStyle">
-          <span><b>Sound and instruments</b><small>Required Yue2 style prompt</small></span>
-          <textarea id="customStyle" rows="3" maxlength="500" placeholder="Atmospheric guitars, live drums, warm bass, intimate lead vocal, wide chorus"></textarea>
-        </label>
-        <label class="setting-field" for="customKeywords">
-          <span><b>Extra rotating ideas</b><small>Comma-separated themes or production details</small></span>
-          <input id="customKeywords" type="text" maxlength="300" placeholder="snowfall, northern lights, tape warmth" />
-        </label>
-
-        <div class="connection-result" id="connectionResult" role="status" aria-live="polite">Ready to test both services.</div>
+        <section class="settings-group" aria-labelledby="customRadioHeading">
+          <div class="settings-section-heading first">
+            <div><span id="customRadioHeading">CUSTOM RADIO</span><small>Saved only in this browser</small></div>
+            <button class="section-action ai-action" id="completeCustomStation" type="button">FILL MISSING WITH LM</button>
+          </div>
+          <p class="section-help" id="customAssistStatus" role="status" aria-live="polite">Enter any details you care about. LM Studio can complete only the blank fields without replacing your text.</p>
+          <label class="setting-field" for="customName">
+            <span><b>Station name</b><small>For example Arctic Echo FM</small></span>
+            <input id="customName" type="text" maxlength="48" placeholder="My custom station" />
+          </label>
+          <label class="setting-field" for="customGenre">
+            <span><b>Genre</b><small>The station’s main musical identity</small></span>
+            <input id="customGenre" type="text" maxlength="80" placeholder="Nordic indie rock" />
+          </label>
+          <label class="setting-field" for="customMood">
+            <span><b>Mood</b><small>Emotional direction for the lyrics</small></span>
+            <input id="customMood" type="text" maxlength="80" placeholder="Winter night, hopeful" />
+          </label>
+          <label class="setting-field" for="customStyle">
+            <span><b>Sound and instruments</b><small>Required Yue2 style prompt</small></span>
+            <textarea id="customStyle" rows="3" maxlength="500" placeholder="Atmospheric guitars, live drums, warm bass, intimate lead vocal, wide chorus"></textarea>
+          </label>
+          <label class="setting-field" for="customKeywords">
+            <span><b>Extra rotating ideas</b><small>Comma-separated themes or production details</small></span>
+            <input id="customKeywords" type="text" maxlength="300" placeholder="snowfall, northern lights, tape warmth" />
+          </label>
+        </section>
 
         <div class="dialog-actions">
-          <button class="ghost-button" id="testConnections" type="button">TEST CONNECTIONS</button>
+          <button class="ghost-button" value="cancel" type="submit">CANCEL</button>
           <button class="save-button" id="saveSettings" value="default" type="submit">SAVE &amp; CLOSE</button>
         </div>
 
@@ -269,6 +278,6 @@
 
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
-    <script src="./app.js?v=0.5.1" type="module"></script>
+    <script src="./app.js?v=0.6.0" type="module"></script>
   </body>
 </html>

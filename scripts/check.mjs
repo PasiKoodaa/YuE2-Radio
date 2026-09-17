@@ -38,13 +38,15 @@ const html = readFileSync("dist/index.html", "utf8");
 for (const asset of ["./styles.css", "./app.js"]) {
   if (!html.includes(asset)) throw new Error(`dist/index.html does not reference ${asset}`);
 }
-for (const id of ["queueTarget", "saveSong", "queueList", "historyList", "historyTab", "lyricsContent"]) {
+for (const id of ["queueTarget", "saveSong", "autoSaveToggle", "queueList", "historyList", "historyTab", "lyricsContent", "completeCustomStation", "customAssistStatus"]) {
   if (!html.includes(`id="${id}"`)) throw new Error(`dist/index.html is missing #${id}`);
 }
 
 const app = readFileSync("dist/app.js", "utf8");
 if (!app.includes("state.playQueue.length >= state.queueTarget")) throw new Error("App must fill a configurable play-ahead queue.");
 if (!app.includes("download = `${safeFileName(track.title)}.wav`")) throw new Error("App must save generated songs as WAV files.");
+if (!app.includes("showDirectoryPicker") || !app.includes("createWritable")) throw new Error("App must support folder-based automatic song saving.");
+if (!app.includes("async function completeCustomStation()")) throw new Error("App must let LM Studio complete blank Custom Radio fields.");
 if (!app.includes("const genreSeeds =")) throw new Error("App must define genre-aware creative seed pools.");
 for (const stationId of ["afterglow", "velvet", "metro", "static", "midnight", "mare", "neon", "serein"]) {
   if (!app.includes(`${stationId}: {`)) throw new Error(`Genre seeds are missing for ${stationId}.`);

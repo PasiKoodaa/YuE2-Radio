@@ -1,6 +1,6 @@
 {
   "name": "localwave-radio",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "private": true,
   "description": "Local AI radio powered by LM Studio, audio.cpp, and Yue2-3B",
   "license": "MIT",

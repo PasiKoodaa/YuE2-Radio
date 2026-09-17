@@ -87,6 +87,9 @@ const state = {
   audioUrl: null,
   continuous: true,
   queueTarget: 2,
+  autoSaveEnabled: false,
+  autoSaveDirectory: null,
+  customDraftAborter: null,
   generationMode: null,
   generationRevision: 0,
   prefetchTimer: null,
@@ -127,6 +130,7 @@ function loadPreferences() {
   els.queueTarget.value = String(state.queueTarget);
   syncSettingsInputs();
   syncContinuousToggle();
+  syncAutoSaveToggle();
 }
 
 function syncSettingsInputs() {
@@ -151,6 +155,15 @@ function syncContinuousToggle() {
   els.continuousToggle.classList.toggle("active", state.continuous);
   els.continuousToggle.setAttribute("aria-pressed", String(state.continuous));
   els.continuousToggle.title = state.continuous ? "Continuous play is on" : "Continuous play is off";
+}
+
+function syncAutoSaveToggle() {
+  els.autoSaveToggle.classList.toggle("active", state.autoSaveEnabled);
+  els.autoSaveToggle.setAttribute("aria-pressed", String(state.autoSaveEnabled));
+  els.autoSaveToggle.textContent = state.autoSaveEnabled ? "AUTO-SAVE ON" : "AUTO-SAVE OFF";
+  els.autoSaveToggle.title = state.autoSaveEnabled
+    ? `Saving every new song to ${state.autoSaveDirectory?.name || "the selected folder"}`
+    : "Choose a folder and automatically save every new song";
 }
 
 function clearQueuedTracks({ abortBackground = false, invalidate = false } = {}) {
@@ -314,6 +327,108 @@ async function testConnections({ quiet = false } = {}) {
   return lmOkay && audioOkay;
 }
 
+async function resolveLmModel(base, requestedModel, signal) {
+  const requested = String(requestedModel || "").trim();
+  if (requested && requested.toLowerCase() !== "auto") return requested;
+  const list = await fetchJson(`${base}/models`, { signal });
+  const model = list?.data?.[0]?.id;
+  if (!model) throw new Error("LM Studio has no loaded model.");
+  return model;
+}
+
+function parseJsonObject(text) {
+  const source = String(text || "");
+  const start = source.indexOf("{");
+  const end = source.lastIndexOf("}");
+  if (start < 0 || end <= start) throw new Error("LM Studio did not return the requested station fields.");
+  return JSON.parse(source.slice(start, end + 1));
+}
+
+function setCustomAssistStatus(message, type = "") {
+  els.customAssistStatus.textContent = message;
+  els.customAssistStatus.className = `section-help${type ? ` ${type}` : ""}`;
+}
+
+async function completeCustomStation() {
+  if (state.customDraftAborter) {
+    state.customDraftAborter.abort();
+    return;
+  }
+  if (state.generating) {
+    showToast("Wait for the current song generation to finish");
+    return;
+  }
+
+  const inputs = {
+    name: els.customName,
+    genre: els.customGenre,
+    mood: els.customMood,
+    style: els.customStyle,
+    keywords: els.customKeywords
+  };
+  const current = Object.fromEntries(Object.entries(inputs).map(([key, input]) => [key, input.value.trim()]));
+  const missing = Object.keys(current).filter((key) => !current[key]);
+  if (!missing.length) {
+    setCustomAssistStatus("All Custom Radio fields already have values. Clear any field you want LM Studio to rewrite.", "success");
+    return;
+  }
+
+  const controller = new AbortController();
+  state.customDraftAborter = controller;
+  els.completeCustomStation.textContent = "CANCEL DRAFT";
+  els.saveSettings.disabled = true;
+  setCustomAssistStatus(`LM Studio is completing ${missing.length} blank field${missing.length === 1 ? "" : "s"}…`);
+
+  try {
+    const base = normalizeBase(els.lmEndpoint.value || state.settings.lmEndpoint);
+    if (!base) throw new Error("Enter an LM Studio endpoint first.");
+    const model = await resolveLmModel(base, els.lmModel.value || state.settings.lmModel, controller.signal);
+    const data = await fetchJson(`${base}/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: controller.signal,
+      body: JSON.stringify({
+        model,
+        temperature: 0.78,
+        max_tokens: 500,
+        messages: [
+          {
+            role: "system",
+            content: "You design coherent original radio station concepts. Return only valid JSON. Never mention real artists or copyrighted song titles."
+          },
+          {
+            role: "user",
+            content: `Complete only the blank fields for this custom music station. Preserve the user's existing ideas.\nExisting fields: ${JSON.stringify(current)}\nBlank fields: ${missing.join(", ")}\nReturn one JSON object using these keys: name, genre, mood, style, keywords. Use strings only. Name must be a short radio station name. Genre and mood should be concise. Style must be a detailed comma-separated Yue2 production prompt covering genre, instruments, rhythm, vocal character, and arrangement. Keywords must contain 4–6 comma-separated lyrical themes or production ideas.`
+          }
+        ]
+      })
+    });
+    const result = parseJsonObject(data?.choices?.[0]?.message?.content);
+    let completed = 0;
+    for (const key of missing) {
+      const input = inputs[key];
+      const value = typeof result[key] === "string" ? result[key].trim() : "";
+      if (!input.value.trim() && value) {
+        input.value = input.maxLength > 0 ? value.slice(0, input.maxLength) : value;
+        completed += 1;
+      }
+    }
+    if (!completed) throw new Error("LM Studio returned no usable values for the blank fields.");
+    setCustomAssistStatus(`Completed ${completed} field${completed === 1 ? "" : "s"}. Review the suggestions, then save.`, "success");
+    showToast("Custom Radio draft completed");
+  } catch (error) {
+    if (error.name === "AbortError") setCustomAssistStatus("Custom Radio draft stopped.");
+    else {
+      setCustomAssistStatus(error.message || "Could not complete the Custom Radio fields.", "error");
+      showToast("LM Studio could not complete the station");
+    }
+  } finally {
+    if (state.customDraftAborter === controller) state.customDraftAborter = null;
+    els.completeCustomStation.textContent = "FILL MISSING WITH LM";
+    els.saveSettings.disabled = false;
+  }
+}
+
 function roll(list) { return list[Math.floor(Math.random() * list.length)]; }
 
 function createCreativeBrief(station, language) {
@@ -355,12 +470,7 @@ function waitForRetry(milliseconds, signal) {
 
 async function generateLyrics(station, language, brief, signal, onAttempt = () => {}) {
   const base = normalizeBase(state.settings.lmEndpoint);
-  let model = state.settings.lmModel.trim();
-  if (!model || model.toLowerCase() === "auto") {
-    const list = await fetchJson(`${base}/models`, { signal });
-    model = list?.data?.[0]?.id;
-    if (!model) throw new Error("LM Studio has no loaded model.");
-  }
+  const model = await resolveLmModel(base, state.settings.lmModel, signal);
 
   let feedback = "";
   let lastError;
@@ -575,6 +685,7 @@ async function makeSong({ autoplay = true, background = false } = {}) {
     }
 
     const track = { ...song, audioUrl, station, language, brief };
+    await autoSaveTrack(track);
     if (els.audioPlayer.src && !els.audioPlayer.paused && !els.audioPlayer.ended) {
       state.playQueue.push(track);
       renderQueue();
@@ -656,6 +767,53 @@ function renderHistory() {
 
 function safeFileName(value) {
   return String(value || "radio-song").replace(/[<>:"/\\|?*\u0000-\u001f]/g, "-").replace(/[. ]+$/g, "").trim() || "radio-song";
+}
+
+function autoSaveFileName(track) {
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-").replace("T", "_").slice(0, 19);
+  return `${safeFileName(`${stamp} - ${track.station.name} - ${track.title}`)}.wav`;
+}
+
+async function toggleAutoSave() {
+  if (state.autoSaveEnabled) {
+    state.autoSaveEnabled = false;
+    state.autoSaveDirectory = null;
+    syncAutoSaveToggle();
+    showToast("Automatic song saving off");
+    return;
+  }
+  if (typeof window.showDirectoryPicker !== "function") {
+    showToast("Auto-save folders require Chrome or Edge; use Save WAV instead");
+    return;
+  }
+  try {
+    const directory = await window.showDirectoryPicker({ id: "radio-song-library", mode: "readwrite" });
+    state.autoSaveDirectory = directory;
+    state.autoSaveEnabled = true;
+    syncAutoSaveToggle();
+    showToast(`Every new song will save to ${directory.name}`);
+  } catch (error) {
+    if (error.name !== "AbortError") showToast("Could not open the auto-save folder");
+  }
+}
+
+async function autoSaveTrack(track) {
+  if (!state.autoSaveEnabled || !state.autoSaveDirectory || track.autoSaved) return;
+  track.autoSaved = true;
+  try {
+    const response = await fetch(track.audioUrl);
+    const blob = await response.blob();
+    const file = await state.autoSaveDirectory.getFileHandle(autoSaveFileName(track), { create: true });
+    const writable = await file.createWritable();
+    await writable.write(blob);
+    await writable.close();
+  } catch (error) {
+    track.autoSaved = false;
+    state.autoSaveEnabled = false;
+    state.autoSaveDirectory = null;
+    syncAutoSaveToggle();
+    showToast("Auto-save stopped because the folder is no longer writable");
+  }
 }
 
 function saveTrack(track) {
@@ -818,7 +976,11 @@ els.openSettings.addEventListener("click", () => { syncSettingsInputs(); els.set
 els.lmStatus.addEventListener("click", () => els.settingsDialog.showModal());
 els.audioStatus.addEventListener("click", () => els.settingsDialog.showModal());
 els.testConnections.addEventListener("click", () => testConnections());
-els.settingsForm.addEventListener("submit", (event) => { if (event.submitter?.value !== "cancel") saveSettings(); });
+els.completeCustomStation.addEventListener("click", completeCustomStation);
+els.settingsForm.addEventListener("submit", (event) => {
+  state.customDraftAborter?.abort();
+  if (event.submitter?.value !== "cancel") saveSettings();
+});
 els.generateButton.addEventListener("click", () => makeSong({ autoplay: true }));
 els.playButton.addEventListener("click", async () => {
   if (state.generating) return;
@@ -892,6 +1054,7 @@ els.copyLyrics.addEventListener("click", async () => {
   showToast("Lyrics copied");
 });
 els.saveSong.addEventListener("click", () => saveTrack(state.currentTrack));
+els.autoSaveToggle.addEventListener("click", toggleAutoSave);
 els.queueList.addEventListener("click", (event) => {
   const button = event.target.closest("[data-queue-save]");
   if (!button) return;

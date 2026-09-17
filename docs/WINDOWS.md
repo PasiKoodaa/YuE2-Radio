@@ -82,6 +82,14 @@ Radio closes the active request and pauses continuous queue filling. The local p
 
 Set **Songs ahead** to 2 or 3 so Radio starts preparing more music while the current song plays. The first song still has to finish generating before playback can begin, and very slow hardware can take longer to render a song than the current track lasts.
 
+### Automatically save every song
+
+Open the Lyrics tab and select **Auto-save off**. In Microsoft Edge or Google Chrome, choose a local folder and approve write access. Radio then saves every newly completed song to that folder, including songs prepared for the queue. Auto-save permission lasts for the current browser session; select the folder again after restarting Radio. Other browsers can still use the **Save WAV** buttons.
+
+### Complete a Custom Radio station with LM Studio
+
+Open Settings and enter any Custom Radio details you care about. Select **Fill missing with LM** to ask the loaded LM Studio model to complete only blank fields. Existing text is never replaced. Review the suggestions and then select **Save & Close**.
+
 ### “Yue2 requires non-empty style”
 
 Update to Radio v0.4.0 or newer. Older versions sent the style as a normal request field, but audio.cpp requires it inside the request `options` object. The updated app also uses Yue2's native `lyrics` field.
