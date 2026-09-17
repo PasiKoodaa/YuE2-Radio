@@ -80,7 +80,19 @@ Radio closes the active request and pauses continuous queue filling. The local p
 
 ### Continuous playback has a gap
 
-Set **Songs ahead** to 2 or 3 so Radio starts preparing more music while the current song plays. The first song still has to finish generating before playback can begin, and very slow hardware can take longer to render a song than the current track lasts.
+Set **Songs ahead** to 2–5 so Radio starts preparing more music while the current song plays. Keep **Jobs** at 1 unless your PC has enough memory to run two local generations simultaneously. The first song still has to finish generating before playback can begin, and very slow hardware can take longer to render a song than the current track lasts.
+
+### Resume after closing Radio
+
+Radio keeps completed songs and recovery information in that browser profile. Restart the launcher and Radio restores the current song, position, and queue. Press **Play** once because browsers do not permit audio to start automatically after a restart. An interrupted queue job is retried when Continuous mode is enabled.
+
+### Song Library, requests, and smoother playback
+
+The **Library** tab stores completed audio, lyrics, prompts, and favorites locally. Use its search and station filter to replay, regenerate, export song information, or delete a song. Removing browser site data also removes this library, so use **Auto-save** for WAV files you want to keep independently.
+
+Enter a topic in **Song request** to place it into an upcoming song. The Queue shows which song used the request. **Variety** controls how far prompts move from the station’s usual ideas.
+
+Settings includes a crossfade duration. Radio measures each new song for playback loudness and smoothly overlaps queued tracks. The original WAV files are not modified.
 
 ### Automatically save every song
 

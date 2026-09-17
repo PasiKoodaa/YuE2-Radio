@@ -6,8 +6,8 @@ const result = spawnSync(process.execPath, ["scripts/check.mjs"], { stdio: "inhe
 if (result.status !== 0) process.exit(result.status || 1);
 
 mkdirSync("release", { recursive: true });
-const output = resolve("release/radio-local-v0.6.0.zip");
-const stage = resolve("release/radio-local-v0.6.0");
+const output = resolve("release/radio-local-v0.7.0.zip");
+const stage = resolve("release/radio-local-v0.7.0");
 rmSync(output, { force: true });
 rmSync(stage, { recursive: true, force: true });
 mkdirSync(stage, { recursive: true });

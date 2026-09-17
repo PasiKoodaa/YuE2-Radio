@@ -6,6 +6,7 @@ const required = [
   "dist/styles.css",
   "dist/app.js",
   "dist/audio-request.js",
+  "dist/radio-storage.js",
   "dist/song-validation.js",
   "server.mjs",
   "radio.config.json",
@@ -25,7 +26,7 @@ if (missing.length) {
   process.exit(1);
 }
 
-for (const file of ["dist/app.js", "dist/audio-request.js", "dist/song-validation.js", "server.mjs", "scripts/check.mjs", "scripts/package.mjs", "scripts/test-validation.mjs"]) {
+for (const file of ["dist/app.js", "dist/audio-request.js", "dist/radio-storage.js", "dist/song-validation.js", "server.mjs", "scripts/check.mjs", "scripts/package.mjs", "scripts/test-validation.mjs"]) {
   const result = spawnSync(process.execPath, ["--check", file], { stdio: "inherit" });
   if (result.status !== 0) process.exit(result.status || 1);
 }
@@ -38,7 +39,7 @@ const html = readFileSync("dist/index.html", "utf8");
 for (const asset of ["./styles.css", "./app.js"]) {
   if (!html.includes(asset)) throw new Error(`dist/index.html does not reference ${asset}`);
 }
-for (const id of ["queueTarget", "saveSong", "autoSaveToggle", "queueList", "historyList", "historyTab", "lyricsContent", "completeCustomStation", "customAssistStatus"]) {
+for (const id of ["queueTarget", "saveSong", "autoSaveToggle", "queueList", "historyList", "historyTab", "lyricsContent", "completeCustomStation", "customAssistStatus", "requestTopic", "varietyLevel", "maxJobs", "generationPause", "crossfadePlayer", "libraryTab", "librarySearch", "libraryList"]) {
   if (!html.includes(`id="${id}"`)) throw new Error(`dist/index.html is missing #${id}`);
 }
 
@@ -52,6 +53,14 @@ for (const stationId of ["afterglow", "velvet", "metro", "static", "midnight", "
   if (!app.includes(`${stationId}: {`)) throw new Error(`Genre seeds are missing for ${stationId}.`);
 }
 if (!app.includes('localStorage.setItem("radio-history"')) throw new Error("App must persist previous-song history locally.");
+if (!app.includes('putAppState("session"') || !app.includes("restoreLocalLibrary")) throw new Error("App must persist and restore its playback session.");
+if (!app.includes("startCrossfade") || !app.includes("measureNormalizationGain")) throw new Error("App must crossfade and normalize generated audio.");
+if (!app.includes("state.recentCreative") || !app.includes("noveltyErrors")) throw new Error("App must reduce creative and lyrical repetition.");
+if (!app.includes("state.activeJobs") || !app.includes("generationPaused")) throw new Error("App must manage background generation jobs.");
+if (!app.includes("listenerRequest") || !app.includes("persistRequests")) throw new Error("App must place listener requests into upcoming songs.");
+
+const storage = readFileSync("dist/radio-storage.js", "utf8");
+if (!storage.includes("indexedDB.open") || !storage.includes('const TRACKS = "tracks"')) throw new Error("Song library must use browser-local IndexedDB storage.");
 
 const server = readFileSync("server.mjs", "utf8");
 if (!server.includes('req.once("aborted", abortUpstream)')) throw new Error("Local proxy must forward client cancellation upstream.");

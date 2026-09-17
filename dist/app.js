@@ -1,5 +1,6 @@
 import { MIN_LYRIC_UNITS, splitSong, validateSong } from "./song-validation.js";
 import { createYue2Request } from "./audio-request.js";
+import { deleteTrack as deleteStoredTrack, getAppState, listTracks, putAppState, putTrack as putStoredTrack } from "./radio-storage.js";
 
 const stations = [
   { id: "afterglow", name: "Afterglow FM", short: "AF", frequency: "88.3", genre: "Synth pop", mood: "Night drive", location: "SIGNAL 01 · AFTER DARK", color: "#ff4d32", rgb: "255, 77, 50", style: "synth pop, night drive, glassy analog synths, driving bass, crisp drum machine, luminous lead vocal, cinematic chorus" },
@@ -75,10 +76,10 @@ const state = {
   tuningMode: "station",
   customStation: { ...defaultCustomStation },
   lastGeneratedStationId: null,
-  lastBriefSignature: "",
-  generating: false,
-  aborter: null,
+  recentCreative: [],
+  activeJobs: new Map(),
   playQueue: [],
+  library: [],
   history: [],
   currentTrack: null,
   currentTrackArchived: false,
@@ -87,12 +88,24 @@ const state = {
   audioUrl: null,
   continuous: true,
   queueTarget: 2,
+  generationPaused: false,
+  maxJobs: 1,
+  varietyLevel: "balanced",
+  requests: [],
   autoSaveEnabled: false,
   autoSaveDirectory: null,
   customDraftAborter: null,
-  generationMode: null,
   generationRevision: 0,
   prefetchTimer: null,
+  sessionSaveTimer: null,
+  crossfadeSeconds: 5,
+  crossfading: false,
+  activeDeck: 0,
+  audioContext: null,
+  deckGains: [],
+  masterGain: null,
+  restoredSession: null,
+  recoveryNotice: "",
   settings: {
     lmEndpoint: "http://localhost:1234/v1",
     lmModel: "Auto",
@@ -123,14 +136,27 @@ function loadPreferences() {
     if (state.tuningMode === "custom" && !isCustomConfigured()) state.tuningMode = "station";
     els.languageSelect.value = localStorage.getItem("radio-language") || "English";
     state.continuous = localStorage.getItem("radio-continuous") !== "off";
-    state.queueTarget = Math.min(3, Math.max(1, Number(localStorage.getItem("radio-queue-target")) || 2));
+    state.generationPaused = localStorage.getItem("radio-generation-paused") === "on";
+    state.queueTarget = Math.min(5, Math.max(1, Number(localStorage.getItem("radio-queue-target")) || 2));
+    state.maxJobs = Math.min(2, Math.max(1, Number(localStorage.getItem("radio-max-jobs")) || 1));
+    state.varietyLevel = ["focused", "balanced", "experimental"].includes(localStorage.getItem("radio-variety")) ? localStorage.getItem("radio-variety") : "balanced";
+    state.crossfadeSeconds = [0, 3, 5, 8].includes(Number(localStorage.getItem("radio-crossfade"))) ? Number(localStorage.getItem("radio-crossfade")) : 5;
+    const requests = JSON.parse(localStorage.getItem("radio-requests") || "[]");
+    if (Array.isArray(requests)) state.requests = requests.filter((item) => item?.topic).slice(0, 20).map((item) => ({ ...item, status: "pending", reservedBy: null }));
+    const recentCreative = JSON.parse(localStorage.getItem("radio-recent-creative") || "[]");
+    if (Array.isArray(recentCreative)) state.recentCreative = recentCreative.slice(0, 40);
     const history = JSON.parse(localStorage.getItem("radio-history") || "[]");
     if (Array.isArray(history)) state.history = history.slice(0, 25);
   } catch { /* Use safe defaults. */ }
   els.queueTarget.value = String(state.queueTarget);
+  els.maxJobs.value = String(state.maxJobs);
+  els.varietyLevel.value = state.varietyLevel;
+  els.crossfadeSeconds.value = String(state.crossfadeSeconds);
   syncSettingsInputs();
   syncContinuousToggle();
   syncAutoSaveToggle();
+  syncGenerationPause();
+  renderRequests();
 }
 
 function syncSettingsInputs() {
@@ -138,6 +164,7 @@ function syncSettingsInputs() {
   els.lmModel.value = state.settings.lmModel;
   els.audioEndpoint.value = state.settings.audioEndpoint;
   els.audioModel.value = state.settings.audioModel;
+  els.crossfadeSeconds.value = String(state.crossfadeSeconds);
   els.customName.value = state.customStation.name === defaultCustomStation.name ? "" : state.customStation.name;
   els.customGenre.value = state.customStation.genre === defaultCustomStation.genre ? "" : state.customStation.genre;
   els.customMood.value = state.customStation.mood === defaultCustomStation.mood ? "" : state.customStation.mood;
@@ -157,6 +184,14 @@ function syncContinuousToggle() {
   els.continuousToggle.title = state.continuous ? "Continuous play is on" : "Continuous play is off";
 }
 
+function isGenerating() { return state.activeJobs.size > 0; }
+
+function syncGenerationPause() {
+  els.generationPause.classList.toggle("active", state.generationPaused);
+  els.generationPause.setAttribute("aria-pressed", String(state.generationPaused));
+  els.generationPause.textContent = state.generationPaused ? "RESUME FILL" : "PAUSE FILL";
+}
+
 function syncAutoSaveToggle() {
   els.autoSaveToggle.classList.toggle("active", state.autoSaveEnabled);
   els.autoSaveToggle.setAttribute("aria-pressed", String(state.autoSaveEnabled));
@@ -169,12 +204,17 @@ function syncAutoSaveToggle() {
 function clearQueuedTracks({ abortBackground = false, invalidate = false } = {}) {
   clearTimeout(state.prefetchTimer);
   state.prefetchTimer = null;
-  if (invalidate || state.playQueue.length || state.generationMode === "background") state.generationRevision += 1;
-  state.playQueue.forEach((track) => URL.revokeObjectURL(track.audioUrl));
+  if (invalidate || state.playQueue.length || [...state.activeJobs.values()].some((job) => job.background)) state.generationRevision += 1;
+  state.playQueue.forEach((track) => {
+    if (track.audioUrl) URL.revokeObjectURL(track.audioUrl);
+    track.audioUrl = "";
+  });
   state.playQueue = [];
-  if (abortBackground && state.generationMode === "background") state.aborter?.abort();
-  if (invalidate) state.aborter?.abort();
+  if (abortBackground || invalidate) {
+    for (const job of state.activeJobs.values()) if (invalidate || job.background) job.controller.abort();
+  }
   renderQueue();
+  scheduleSessionSave();
 }
 
 function renderStations() {
@@ -212,12 +252,12 @@ function selectStation(index, { announce = true } = {}) {
   els.stationGenre.textContent = `${station.genre} · ${station.mood}`.toUpperCase();
   els.nowPlayingTitle.textContent = station.name;
   els.stationLocation.textContent = station.location;
-  if (!state.generating && !els.audioPlayer.src) els.trackTitle.textContent = "Ready for a new transmission";
+  if (!isGenerating() && !currentAudioElement().src) els.trackTitle.textContent = "Ready for a new transmission";
   renderStations();
   localStorage.setItem("radio-station", station.id);
   localStorage.setItem("radio-tuning-mode", "station");
   if (announce) showToast(`Tuned to ${station.frequency} · ${station.name}`);
-  if (announce && state.continuous && !els.audioPlayer.paused) scheduleQueueFill();
+  if (announce && state.continuous && !currentAudioElement().paused) scheduleQueueFill();
 }
 
 function selectRandomMode({ announce = true } = {}) {
@@ -232,7 +272,7 @@ function selectRandomMode({ announce = true } = {}) {
   renderStations();
   localStorage.setItem("radio-tuning-mode", "random");
   if (announce) showToast("Random Radio will change style every song");
-  if (announce && state.continuous && !els.audioPlayer.paused) scheduleQueueFill();
+  if (announce && state.continuous && !currentAudioElement().paused) scheduleQueueFill();
 }
 
 function selectCustomMode({ announce = true } = {}) {
@@ -255,7 +295,7 @@ function selectCustomMode({ announce = true } = {}) {
   renderStations();
   localStorage.setItem("radio-tuning-mode", "custom");
   if (announce) showToast(`Tuned to ${station.name}`);
-  if (announce && state.continuous && !els.audioPlayer.paused) scheduleQueueFill();
+  if (announce && state.continuous && !currentAudioElement().paused) scheduleQueueFill();
 }
 
 function selectChoice(offset) {
@@ -354,7 +394,7 @@ async function completeCustomStation() {
     state.customDraftAborter.abort();
     return;
   }
-  if (state.generating) {
+  if (isGenerating()) {
     showToast("Wait for the current song generation to finish");
     return;
   }
@@ -431,31 +471,69 @@ async function completeCustomStation() {
 
 function roll(list) { return list[Math.floor(Math.random() * list.length)]; }
 
-function createCreativeBrief(station, language) {
-  let brief;
-  for (let attempt = 0; attempt < 6; attempt += 1) {
-    const customIdeas = String(station.keywords || "").split(",").map((item) => item.trim()).filter(Boolean);
-    const seeds = genreSeeds[station.id] || creativeRolls;
-    brief = {
-      theme: roll(seeds.themes || creativeRolls.themes),
-      customIdea: customIdeas.length ? roll(customIdeas) : "",
-      perspective: roll(creativeRolls.perspectives),
-      image: roll(seeds.images || creativeRolls.images),
-      motif: roll(seeds.motifs || creativeRolls.motifs),
-      energy: roll(creativeRolls.energies),
-      production: roll(creativeRolls.production)
-    };
-    brief.signature = [station.id, ...Object.values(brief)].join("|");
-    if (brief.signature !== state.lastBriefSignature) break;
+const tempoSeeds = {
+  afterglow: ["104 BPM steady pulse", "116 BPM night-drive groove", "124 BPM bright dance pulse"], velvet: ["74 BPM deep pocket", "82 BPM laid-back groove", "92 BPM warm head-nod"],
+  metro: ["96 BPM relaxed city groove", "112 BPM buoyant pop groove", "120 BPM brisk sunset drive"], static: ["78 BPM half-time sway", "96 BPM road-song stride", "108 BPM lively roots groove"],
+  midnight: ["66 BPM slow ballad", "82 BPM brushed swing", "104 BPM understated shuffle"], mare: ["86 BPM gentle bossa pulse", "102 BPM light coastal sway", "116 BPM breezy samba lift"],
+  neon: ["104 BPM sleek midtempo", "120 BPM dance-pop drive", "132 BPM high-energy club pulse"], serein: ["72 BPM floating slow pulse", "92 BPM soft motorik motion", "108 BPM luminous dream-pop drive"]
+};
+const instrumentColors = {
+  afterglow: ["arpeggiated analog synth", "gated electric guitar", "wordless vocoder layer"], velvet: ["muted trumpet answers", "tremolo electric piano", "soft string quartet accents"],
+  metro: ["bright brass stabs", "clean chorus guitar", "short saxophone responses"], static: ["pedal steel highlights", "mandolin counterline", "harmonica turnaround"],
+  midnight: ["muted trumpet solo", "vibraphone shimmer", "tenor saxophone responses"], mare: ["flute countermelody", "soft accordion color", "cavaquinho accents"],
+  neon: ["percussive synth plucks", "vocal chop accents", "dramatic string hits"], serein: ["ebow guitar texture", "celesta highlights", "distant saxophone haze"]
+};
+
+function freshRoll(list, stationId, key) {
+  const recent = new Set(state.recentCreative.filter((item) => item.stationId === stationId).slice(0, 12).map((item) => item[key]).filter(Boolean));
+  const unused = list.filter((value) => !recent.has(value));
+  return roll(unused.length ? unused : list);
+}
+
+function reserveRequest(jobId) {
+  const request = state.requests.find((item) => item.status === "pending");
+  if (!request) return null;
+  Object.assign(request, { status: "reserved", reservedBy: jobId });
+  renderRequests();
+  persistRequests();
+  return request;
+}
+
+function finishRequest(jobId, completed) {
+  const request = state.requests.find((item) => item.reservedBy === jobId);
+  if (!request) return;
+  if (completed) state.requests = state.requests.filter((item) => item !== request);
+  else Object.assign(request, { status: "pending", reservedBy: null });
+  renderRequests();
+  persistRequests();
+}
+
+function createCreativeBrief(station, language, jobId) {
+  const customIdeas = String(station.keywords || "").split(",").map((item) => item.trim()).filter(Boolean);
+  const genre = genreSeeds[station.id] || creativeRolls;
+  const experimental = state.varietyLevel === "experimental";
+  const themePool = experimental && Math.random() < .4 ? creativeRolls.themes : (genre.themes || creativeRolls.themes);
+  const imagePool = experimental && Math.random() < .35 ? creativeRolls.images : (genre.images || creativeRolls.images);
+  const request = reserveRequest(jobId);
+  const brief = {
+    theme: freshRoll(themePool, station.id, "theme"), customIdea: customIdeas.length ? freshRoll(customIdeas, station.id, "customIdea") : "",
+    perspective: freshRoll(creativeRolls.perspectives, station.id, "perspective"), image: freshRoll(imagePool, station.id, "image"),
+    motif: freshRoll(genre.motifs || creativeRolls.motifs, station.id, "motif"), energy: freshRoll(creativeRolls.energies, station.id, "energy"),
+    production: freshRoll(creativeRolls.production, station.id, "production"), tempo: freshRoll(tempoSeeds[station.id] || ["moderate natural tempo", "slow-building tempo", "energetic forward pulse"], station.id, "tempo"),
+    instrumentColor: freshRoll(instrumentColors[station.id] || ["one distinctive instrumental counterline", "subtle acoustic texture", "an unexpected melodic accent"], station.id, "instrumentColor"), listenerRequest: request?.topic || "", baseStyle: station.style
+  };
+  if (state.varietyLevel === "focused") {
+    brief.production = "a faithful genre arrangement with a clear verse-to-chorus build";
+    brief.instrumentColor = "one subtle instrument natural to the station style";
   }
-  state.lastBriefSignature = brief.signature;
-  brief.audioStyle = [language, station.style, station.mood, brief.energy, brief.production, brief.customIdea].map((value) => String(value || "").trim()).filter(Boolean).join(", ");
+  brief.signature = [station.id, brief.theme, brief.image, brief.motif, brief.tempo, brief.instrumentColor, brief.listenerRequest].join("|");
+  brief.audioStyle = [language, station.style, station.mood, brief.tempo, brief.energy, brief.production, brief.instrumentColor, brief.customIdea].map((value) => String(value || "").trim()).filter(Boolean).join(", ");
   if (!brief.audioStyle.trim()) throw new Error("The selected station needs a non-empty sound and instrument style.");
   return brief;
 }
 
 function lyricPrompt(station, language, brief, retryFeedback = "") {
-  return `Write an original song for a radio station.\nLanguage: ${language}\nGenre and production: ${station.style}\nMood: ${station.mood}\nFresh genre-aware creative roll for this song:\n- Theme: ${brief.theme}\n- Point of view: ${brief.perspective}\n- Central image: ${brief.image}\n- Recurring motif: ${brief.motif}\n- Energy curve: ${brief.energy}\n- Arrangement variation: ${brief.production}${brief.customIdea ? `\n- Station keyword: ${brief.customIdea}` : ""}\nUse these section labels exactly, each on its own line, in this exact order:\n[Verse 1]\n[Pre-Chorus]\n[Chorus]\n[Verse 2]\n[Chorus]\n[Bridge]\n[Final Chorus]\nKeep it singable and vivid. Avoid named artists, existing song titles, clichés about AI, markdown fences, and commentary. Return only a short original title on the first line as \"TITLE: ...\", then the lyrics. Write 220–320 words for space-delimited languages, or a comparably substantial length for Japanese and Korean. The validator requires at least ${MIN_LYRIC_UNITS} normalized lyric units.${retryFeedback ? `\nYour last draft was rejected because: ${retryFeedback}. Create a completely corrected draft.` : ""}`;
+  return `Write an original song for a radio station.\nLanguage: ${language}\nGenre and production: ${station.style}\nMood: ${station.mood}\nFresh genre-aware creative roll for this song:\n- Theme: ${brief.theme}\n- Point of view: ${brief.perspective}\n- Central image: ${brief.image}\n- Recurring motif: ${brief.motif}\n- Tempo: ${brief.tempo}\n- Instrument highlight: ${brief.instrumentColor}\n- Energy curve: ${brief.energy}\n- Arrangement variation: ${brief.production}${brief.customIdea ? `\n- Station keyword: ${brief.customIdea}` : ""}${brief.listenerRequest ? `\n- Listener request that MUST clearly appear in the song: ${brief.listenerRequest}` : ""}\nUse these section labels exactly, each on its own line, in this exact order:\n[Verse 1]\n[Pre-Chorus]\n[Chorus]\n[Verse 2]\n[Chorus]\n[Bridge]\n[Final Chorus]\nKeep it singable and vivid. Avoid named artists, existing song titles, clichés about AI, markdown fences, and commentary. Return only a short original title on the first line as \"TITLE: ...\", then the lyrics. Write 220–320 words for space-delimited languages, or a comparably substantial length for Japanese and Korean. The validator requires at least ${MIN_LYRIC_UNITS} normalized lyric units.${retryFeedback ? `\nYour last draft was rejected because: ${retryFeedback}. Create a completely corrected draft.` : ""}`;
 }
 
 function waitForRetry(milliseconds, signal) {
@@ -466,6 +544,34 @@ function waitForRetry(milliseconds, signal) {
       reject(new DOMException("Generation cancelled", "AbortError"));
     }, { once: true });
   });
+}
+
+function normalizedWords(value) {
+  return String(value || "").toLocaleLowerCase().replace(/\[[^\]]+\]/g, " ").replace(/[^\p{L}\p{N}\s]/gu, " ").split(/\s+/).filter((word) => word.length > 2);
+}
+
+function lyricSimilarity(left, right) {
+  const shingles = (value) => {
+    const words = normalizedWords(value);
+    const result = new Set();
+    for (let index = 0; index < words.length - 3; index += 1) result.add(words.slice(index, index + 4).join(" "));
+    return result;
+  };
+  const a = shingles(left);
+  const b = shingles(right);
+  if (!a.size || !b.size) return 0;
+  let overlap = 0;
+  for (const item of a) if (b.has(item)) overlap += 1;
+  return overlap / Math.min(a.size, b.size);
+}
+
+function noveltyErrors(song) {
+  const errors = [];
+  const title = String(song.title || "").trim().toLocaleLowerCase();
+  if (title && state.library.some((track) => String(track.title || "").trim().toLocaleLowerCase() === title)) errors.push("the title repeats a recent song title");
+  const tooSimilar = state.library.slice(0, 12).find((track) => track.lyrics && lyricSimilarity(song.lyrics, track.lyrics) > .32);
+  if (tooSimilar) errors.push(`too many lyric phrases resemble ${tooSimilar.title}`);
+  return errors;
 }
 
 async function generateLyrics(station, language, brief, signal, onAttempt = () => {}) {
@@ -483,7 +589,7 @@ async function generateLyrics(station, language, brief, signal, onAttempt = () =
         signal,
         body: JSON.stringify({
           model,
-          temperature: attempt === 1 ? 0.9 : 0.72,
+          temperature: attempt === 1 ? (state.varietyLevel === "experimental" ? 1.02 : state.varietyLevel === "focused" ? .78 : .9) : 0.72,
           max_tokens: 1200,
           messages: [
             { role: "system", content: "You are a skilled multilingual songwriter. Obey the output format exactly and write fully original lyrics." },
@@ -495,8 +601,9 @@ async function generateLyrics(station, language, brief, signal, onAttempt = () =
       if (!content) throw new Error("LM Studio returned no lyrics.");
       const song = splitSong(content);
       const validation = validateSong(song);
-      if (validation.valid) return song;
-      feedback = validation.errors.join("; ");
+      const errors = [...validation.errors, ...noveltyErrors(song)];
+      if (!errors.length) return song;
+      feedback = errors.join("; ");
       lastError = new Error(`Lyrics failed validation: ${feedback}`);
     } catch (error) {
       if (error.name === "AbortError") throw error;
@@ -522,7 +629,7 @@ function findAudioString(value, key = "") {
   return null;
 }
 
-async function requestAudio(brief, lyrics, signal) {
+async function requestAudio(brief, lyrics, signal, style = brief.audioStyle) {
   const response = await fetch(`${normalizeBase(state.settings.audioEndpoint)}/v1/tasks/run`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json, audio/wav" },
@@ -530,7 +637,7 @@ async function requestAudio(brief, lyrics, signal) {
     body: JSON.stringify(createYue2Request({
       model: state.settings.audioModel,
       lyrics,
-      style: brief.audioStyle,
+      style,
       seed: Math.floor(Math.random() * 2147483647)
     }))
   });
@@ -541,13 +648,46 @@ async function requestAudio(brief, lyrics, signal) {
   }
 
   const contentType = response.headers.get("content-type") || "";
-  if (contentType.startsWith("audio/")) return URL.createObjectURL(await response.blob());
-  const data = await response.json();
-  const audio = findAudioString(data);
-  if (!audio) throw new Error("audio.cpp completed, but its response did not include browser-playable WAV data.");
-  const source = audio.startsWith("data:") ? audio : `data:audio/wav;base64,${audio}`;
-  const blob = await (await fetch(source)).blob();
-  return URL.createObjectURL(blob);
+  let blob;
+  if (contentType.startsWith("audio/")) blob = await response.blob();
+  else {
+    const data = await response.json();
+    const audio = findAudioString(data);
+    if (!audio) throw new Error("audio.cpp completed, but its response did not include browser-playable WAV data.");
+    const source = audio.startsWith("data:") ? audio : `data:audio/wav;base64,${audio}`;
+    blob = await (await fetch(source)).blob();
+  }
+  return { audioBlob: blob, audioUrl: URL.createObjectURL(blob) };
+}
+
+async function measureNormalizationGain(blob) {
+  try {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass) return 1;
+    const context = new AudioContextClass();
+    const buffer = await context.decodeAudioData(await blob.arrayBuffer());
+    let sum = 0;
+    let count = 0;
+    let peak = 0;
+    for (let channel = 0; channel < buffer.numberOfChannels; channel += 1) {
+      const data = buffer.getChannelData(channel);
+      for (let index = 0; index < data.length; index += 64) {
+        const sample = Math.abs(data[index]);
+        sum += sample * sample;
+        peak = Math.max(peak, sample);
+        count += 1;
+      }
+    }
+    await context.close();
+    const rms = Math.sqrt(sum / Math.max(1, count));
+    return Math.min(1.7, Math.max(.55, Math.min(.96 / Math.max(peak, .01), .13 / Math.max(rms, .01))));
+  } catch { return 1; }
+}
+
+function simplifiedAudioStyle(brief, attempt) {
+  if (attempt === 1) return brief.audioStyle;
+  if (attempt === 2) return [brief.baseStyle, brief.tempo, brief.energy, brief.instrumentColor].filter(Boolean).join(", ");
+  return [brief.baseStyle, brief.tempo, "clear lead vocal", "complete song arrangement"].filter(Boolean).join(", ");
 }
 
 async function generateAudio(brief, lyrics, signal, onAttempt = () => {}) {
@@ -555,7 +695,9 @@ async function generateAudio(brief, lyrics, signal, onAttempt = () => {}) {
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     onAttempt(attempt, 3);
     try {
-      return await requestAudio(brief, lyrics, signal);
+      const audio = await requestAudio(brief, lyrics, signal, simplifiedAudioStyle(brief, attempt));
+      audio.normalizationGain = await measureNormalizationGain(audio.audioBlob);
+      return audio;
     } catch (error) {
       if (error.name === "AbortError") throw error;
       lastError = error;
@@ -586,9 +728,93 @@ function setGenerationStage(stage, detail) {
   els.generationDetail.textContent = detail;
 }
 
+function audioDecks() { return [els.audioPlayer, els.crossfadePlayer]; }
+function currentAudioElement() { return audioDecks()[state.activeDeck]; }
+function ensureTrackUrl(track) {
+  if (!track.audioUrl && track.audioBlob) track.audioUrl = URL.createObjectURL(track.audioBlob);
+  return track.audioUrl;
+}
+
+async function ensureAudioGraph({ activate = true } = {}) {
+  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContextClass) return false;
+  if (!state.audioContext) {
+    state.audioContext = new AudioContextClass();
+    const compressor = state.audioContext.createDynamicsCompressor();
+    compressor.threshold.value = -9;
+    compressor.knee.value = 10;
+    compressor.ratio.value = 3;
+    state.masterGain = state.audioContext.createGain();
+    state.masterGain.gain.value = Number(els.volumeControl.value);
+    state.deckGains = audioDecks().map((element) => {
+      const source = state.audioContext.createMediaElementSource(element);
+      const gain = state.audioContext.createGain();
+      source.connect(gain).connect(compressor);
+      return gain;
+    });
+    compressor.connect(state.masterGain).connect(state.audioContext.destination);
+  }
+  if (activate && state.audioContext.state === "suspended") await state.audioContext.resume();
+  return true;
+}
+
+function setDeckGain(index, value, seconds = 0) {
+  const gain = state.deckGains[index]?.gain;
+  if (!gain || !state.audioContext) return;
+  const now = state.audioContext.currentTime;
+  gain.cancelScheduledValues(now);
+  gain.setValueAtTime(gain.value, now);
+  if (seconds > 0) gain.linearRampToValueAtTime(value, now + seconds);
+  else gain.setValueAtTime(value, now);
+}
+
+function showTrack(track) {
+  state.currentTrack = track;
+  state.currentTrackArchived = false;
+  state.lyrics = track.lyrics;
+  els.trackTitle.textContent = track.title;
+  els.lyricsLanguage.textContent = languageCodes[track.language] || track.language.toUpperCase();
+  renderLyrics(track.lyrics);
+  els.saveSong.disabled = false;
+  showLyricsTab();
+}
+
+async function persistCompletedTrack(track) {
+  track.id ||= crypto.randomUUID();
+  track.createdAt ||= new Date().toISOString();
+  track.favorite ||= false;
+  const record = {
+    id: track.id, title: track.title, lyrics: track.lyrics, audioBlob: track.audioBlob, station: track.station,
+    language: track.language, brief: track.brief, createdAt: track.createdAt, favorite: Boolean(track.favorite),
+    normalizationGain: Number(track.normalizationGain) || 1
+  };
+  await putStoredTrack(record);
+  const existing = state.library.findIndex((item) => item.id === track.id);
+  if (existing >= 0) state.library.splice(existing, 1);
+  state.library.unshift(track);
+  renderLibrary();
+}
+
+function sessionSnapshot() {
+  return {
+    currentTrackId: state.currentTrack?.id || null,
+    currentTime: Number(currentAudioElement().currentTime) || 0,
+    paused: currentAudioElement().paused,
+    queueIds: state.playQueue.map((track) => track.id),
+    pendingJobs: [...state.activeJobs.values()].map((job) => ({ background: job.background, stationId: job.station?.id || null, language: job.language || null })),
+    savedAt: new Date().toISOString()
+  };
+}
+
+function scheduleSessionSave(delay = 250) {
+  clearTimeout(state.sessionSaveTimer);
+  state.sessionSaveTimer = setTimeout(() => putAppState("session", sessionSnapshot()).catch(() => {}), delay);
+}
+
 function archiveCurrentTrack() {
   if (!state.currentTrack || state.currentTrackArchived) return;
   state.history.unshift({
+    trackId: state.currentTrack.id,
     title: state.currentTrack.title,
     station: state.currentTrack.station.name,
     language: state.currentTrack.language,
@@ -598,33 +824,76 @@ function archiveCurrentTrack() {
   state.currentTrackArchived = true;
   localStorage.setItem("radio-history", JSON.stringify(state.history));
   renderHistory();
+  scheduleSessionSave();
 }
 
 async function playTrack(track, { autoplay = true } = {}) {
   if (state.currentTrack && state.currentTrack !== track) archiveCurrentTrack();
-  if (state.audioUrl && state.audioUrl !== track.audioUrl) URL.revokeObjectURL(state.audioUrl);
-  state.audioUrl = track.audioUrl;
-  state.currentTrack = track;
-  state.currentTrackArchived = false;
-  state.lyrics = track.lyrics;
-  els.trackTitle.textContent = track.title;
-  els.lyricsLanguage.textContent = languageCodes[track.language] || track.language.toUpperCase();
-  renderLyrics(track.lyrics);
-  showLyricsTab();
-  els.audioPlayer.src = track.audioUrl;
-  els.audioPlayer.volume = Number(els.volumeControl.value);
-  els.saveSong.disabled = false;
+  await ensureAudioGraph({ activate: autoplay }).catch(() => false);
+  const element = currentAudioElement();
+  const other = audioDecks()[1 - state.activeDeck];
+  other.pause();
+  element.src = ensureTrackUrl(track);
+  element.volume = state.audioContext ? 1 : Math.min(1, Number(els.volumeControl.value) * (track.normalizationGain || 1));
+  setDeckGain(state.activeDeck, track.normalizationGain || 1);
+  showTrack(track);
   renderQueue();
-  if (autoplay) await els.audioPlayer.play();
+  scheduleSessionSave();
+  if (autoplay) await element.play();
 }
 
-function scheduleQueueFill(delay = 150) {
+async function startCrossfade() {
+  if (state.crossfading || !state.playQueue.length || !state.crossfadeSeconds) return;
+  state.crossfading = true;
+  const oldIndex = state.activeDeck;
+  const newIndex = 1 - oldIndex;
+  const oldElement = audioDecks()[oldIndex];
+  const newElement = audioDecks()[newIndex];
+  const nextTrack = state.playQueue.shift();
+  renderQueue();
+  archiveCurrentTrack();
+  try {
+    await ensureAudioGraph();
+    newElement.src = ensureTrackUrl(nextTrack);
+    newElement.currentTime = 0;
+    newElement.volume = 1;
+    setDeckGain(newIndex, 0);
+    await newElement.play();
+    state.activeDeck = newIndex;
+    showTrack(nextTrack);
+    setDeckGain(oldIndex, 0, state.crossfadeSeconds);
+    setDeckGain(newIndex, nextTrack.normalizationGain || 1, state.crossfadeSeconds);
+    setTimeout(() => {
+      oldElement.pause();
+      oldElement.removeAttribute("src");
+      oldElement.load();
+      state.crossfading = false;
+      scheduleSessionSave();
+      scheduleQueueFill();
+    }, state.crossfadeSeconds * 1000 + 100);
+    showToast(`Crossfading to ${nextTrack.title}`);
+  } catch {
+    state.crossfading = false;
+    state.activeDeck = oldIndex;
+    await playTrack(nextTrack, { autoplay: true });
+  }
+}
+
+function fillQueue() {
+  if (!state.continuous || state.generationPaused) return;
+  const needed = state.queueTarget - state.playQueue.length - state.activeJobs.size;
+  const slots = Math.min(needed, state.maxJobs - state.activeJobs.size);
+  for (let index = 0; index < slots; index += 1) makeSong({ autoplay: false, background: true });
+}
+
+function scheduleQueueFill(delay = 150, { allowPausedPlayer = false } = {}) {
   clearTimeout(state.prefetchTimer);
   state.prefetchTimer = null;
-  if (!state.continuous || state.playQueue.length >= state.queueTarget || state.generating || els.audioPlayer.paused || els.audioPlayer.ended) return;
+  const player = currentAudioElement();
+  if (!state.continuous || state.generationPaused || state.playQueue.length >= state.queueTarget || (!allowPausedPlayer && (player.paused || player.ended))) return;
   state.prefetchTimer = setTimeout(() => {
     state.prefetchTimer = null;
-    makeSong({ autoplay: true, background: true });
+    fillQueue();
   }, delay);
 }
 
@@ -636,7 +905,7 @@ async function continuePlayback() {
     await playTrack(track, { autoplay: true });
     showToast("Next transmission playing");
     scheduleQueueFill();
-  } else if (!state.generating) {
+  } else if (!isGenerating()) {
     await makeSong({ autoplay: true, background: true });
   } else {
     setGenerationStage("PREPARING NEXT SONG", "The current song ended; playback will continue as soon as Yue2 finishes…");
@@ -644,8 +913,8 @@ async function continuePlayback() {
 }
 
 async function makeSong({ autoplay = true, background = false } = {}) {
-  if (state.generating) {
-    if (!background) showToast("A song is already being prepared");
+  if (state.activeJobs.size >= state.maxJobs) {
+    if (!background) showToast("All generation jobs are busy");
     return null;
   }
   if (!state.services.lm || !state.services.audio) {
@@ -658,35 +927,46 @@ async function makeSong({ autoplay = true, background = false } = {}) {
     }
   }
 
-  state.generating = true;
-  state.generationMode = background ? "background" : "manual";
-  state.aborter = new AbortController();
-  const controller = state.aborter;
+  const jobId = crypto.randomUUID();
+  const controller = new AbortController();
   const revision = state.generationRevision;
-  renderQueue();
-  els.playButton.classList.add("loading");
-  els.generationStatus.hidden = false;
   const station = resolveStationForSong();
   const language = els.languageSelect.value;
+  const job = { id: jobId, controller, background, station, language, stage: "Starting" };
+  state.activeJobs.set(jobId, job);
+  renderGenerationJobs();
+  renderQueue();
+  scheduleSessionSave(0);
   try {
-    const brief = createCreativeBrief(station, language);
+    const brief = createCreativeBrief(station, language, jobId);
+    job.brief = brief;
     state.lastGeneratedStationId = station.id;
     const prefix = background ? "NEXT SONG · " : "";
     const song = await generateLyrics(station, language, brief, controller.signal, (attempt, total, feedback) => {
+      job.stage = `Lyrics ${attempt}/${total}`;
+      renderGenerationJobs();
       const stationNote = state.tuningMode === "random" ? ` Random Radio picked ${station.name}.` : "";
       setGenerationStage(`${prefix}WRITING LYRICS · ${attempt}/${total}`, feedback ? "The previous draft failed validation; LM Studio is correcting it…" : `LM Studio is writing in ${language}.${stationNote}`);
     });
-    const audioUrl = await generateAudio(brief, song.lyrics, controller.signal, (attempt, total) => {
+    const audio = await generateAudio(brief, song.lyrics, controller.signal, (attempt, total) => {
+      job.stage = `Audio ${attempt}/${total}`;
+      renderGenerationJobs();
       setGenerationStage(`${prefix}COMPOSING AUDIO · ${attempt}/${total}`, "Yue2 is arranging and rendering the song. This can take several minutes…");
     });
-    if (revision !== state.generationRevision || !state.continuous && background) {
-      URL.revokeObjectURL(audioUrl);
+    if (revision !== state.generationRevision) {
+      URL.revokeObjectURL(audio.audioUrl);
+      finishRequest(jobId, false);
       return null;
     }
 
-    const track = { ...song, audioUrl, station, language, brief };
+    const track = { ...song, ...audio, id: crypto.randomUUID(), createdAt: new Date().toISOString(), favorite: false, station, language, brief };
+    await persistCompletedTrack(track);
     await autoSaveTrack(track);
-    if (els.audioPlayer.src && !els.audioPlayer.paused && !els.audioPlayer.ended) {
+    finishRequest(jobId, true);
+    state.recentCreative.unshift({ stationId: station.id, title: track.title, ...brief, lyricsSample: track.lyrics.slice(0, 2600), createdAt: track.createdAt });
+    state.recentCreative = state.recentCreative.slice(0, 40);
+    localStorage.setItem("radio-recent-creative", JSON.stringify(state.recentCreative));
+    if (state.currentTrack || currentAudioElement().src) {
       state.playQueue.push(track);
       renderQueue();
       showToast(`Song queued · ${state.playQueue.length} ready`);
@@ -696,6 +976,7 @@ async function makeSong({ autoplay = true, background = false } = {}) {
     }
     return track;
   } catch (error) {
+    finishRequest(jobId, false);
     if (error.name === "AbortError") {
       if (!background) showToast("Generation cancelled");
     }
@@ -706,15 +987,11 @@ async function makeSong({ autoplay = true, background = false } = {}) {
     }
     return null;
   } finally {
-    if (state.aborter === controller) {
-      state.generating = false;
-      state.generationMode = null;
-      state.aborter = null;
-      els.playButton.classList.remove("loading");
-      els.generationStatus.hidden = true;
-      renderQueue();
-      if (state.continuous && !els.audioPlayer.paused && !els.audioPlayer.ended) scheduleQueueFill();
-    }
+    state.activeJobs.delete(jobId);
+    renderGenerationJobs();
+    renderQueue();
+    scheduleSessionSave(0);
+    if (state.continuous && !currentAudioElement().paused && !currentAudioElement().ended) scheduleQueueFill();
   }
 }
 
@@ -724,34 +1001,39 @@ function formatTime(seconds) {
   return `${minutes}:${String(Math.floor(seconds % 60)).padStart(2, "0")}`;
 }
 
-function updateProgress() {
-  const { currentTime, duration } = els.audioPlayer;
+function updateProgress(event) {
+  const element = currentAudioElement();
+  if (event?.currentTarget && event.currentTarget !== element) return;
+  const { currentTime, duration } = element;
   const percent = duration ? (currentTime / duration) * 100 : 0;
   els.progressFill.style.width = `${percent}%`;
   els.progressTrack.setAttribute("aria-valuenow", String(Math.round(percent)));
   els.elapsedTime.textContent = formatTime(currentTime);
   els.durationTime.textContent = formatTime(duration);
+  if (!state.crossfading && state.crossfadeSeconds > 0 && state.continuous && state.playQueue.length && duration - currentTime <= state.crossfadeSeconds) startCrossfade();
+  scheduleSessionSave(1500);
 }
 
 function setProgress(clientX) {
-  if (!Number.isFinite(els.audioPlayer.duration)) return;
+  const element = currentAudioElement();
+  if (!Number.isFinite(element.duration)) return;
   const rect = els.progressTrack.getBoundingClientRect();
   const ratio = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
-  els.audioPlayer.currentTime = ratio * els.audioPlayer.duration;
+  element.currentTime = ratio * element.duration;
 }
 
 function renderQueue() {
   els.queueCount.textContent = String(state.playQueue.length);
-  const building = state.generating && state.generationMode === "background";
-  els.emptyQueue.hidden = state.playQueue.length > 0 || building;
+  const backgroundJobs = [...state.activeJobs.values()].filter((job) => job.background);
+  els.emptyQueue.hidden = state.playQueue.length > 0 || backgroundJobs.length > 0;
   const songs = state.playQueue.map((item, index) => `
     <li class="queue-item">
       <strong>${escapeHtml(item.title)}</strong>
-      <span>${index === 0 ? "NEXT" : `+${index + 1}`} · ${escapeHtml(item.station.name)} · ${escapeHtml(item.language)}</span>
+      <span>${index === 0 ? "NEXT" : `+${index + 1}`} · ${escapeHtml(item.station.name)} · ${escapeHtml(item.language)}${item.brief?.listenerRequest ? ` · <span class="request-chip">REQUEST: ${escapeHtml(item.brief.listenerRequest)}</span>` : ""}</span>
       <button type="button" data-queue-save="${index}" aria-label="Save ${escapeHtml(item.title)} as WAV">SAVE WAV</button>
     </li>
   `).join("");
-  const pending = building ? `<li class="queue-item building"><strong>Preparing another song…</strong><span>LM Studio + Yue2</span></li>` : "";
+  const pending = backgroundJobs.map((job) => `<li class="queue-item building"><strong>Preparing ${escapeHtml(job.station?.name || "another song")}…</strong><span>${escapeHtml(job.stage)}${job.brief?.listenerRequest ? ` · REQUEST: ${escapeHtml(job.brief.listenerRequest)}` : ""}</span></li>`).join("");
   els.queueList.innerHTML = songs + pending;
 }
 
@@ -763,6 +1045,100 @@ function renderHistory() {
     const playedAt = Number.isNaN(date.getTime()) ? "PREVIOUS" : date.toLocaleString([], { dateStyle: "short", timeStyle: "short" });
     return `<li class="queue-item"><strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(item.station)} · ${escapeHtml(item.language)}</span><time>${escapeHtml(playedAt)}</time></li>`;
   }).join("");
+}
+
+function renderGenerationJobs() {
+  const jobs = [...state.activeJobs.values()];
+  els.playButton.classList.toggle("loading", jobs.some((job) => !job.background));
+  els.generationStatus.hidden = jobs.length === 0;
+  if (jobs.length) {
+    const first = jobs[0];
+    els.generationStage.textContent = jobs.length > 1 ? `${jobs.length} GENERATION JOBS` : String(first.stage || "PREPARING SONG").toUpperCase();
+    els.generationDetail.textContent = jobs.map((job) => `${job.station?.name || "Station"}: ${job.stage}`).join(" · ");
+  }
+}
+
+function persistRequests() {
+  localStorage.setItem("radio-requests", JSON.stringify(state.requests.map(({ id, topic, createdAt }) => ({ id, topic, createdAt }))));
+}
+
+function renderRequests() {
+  const waiting = state.requests.length;
+  const next = state.requests.find((item) => item.status === "pending") || state.requests[0];
+  els.requestCount.textContent = waiting ? `${waiting} waiting · next: ${next?.topic || "reserved"}` : "No requests waiting";
+}
+
+function libraryMatches(track) {
+  const query = els.librarySearch.value.trim().toLocaleLowerCase();
+  const station = els.libraryStationFilter.value;
+  if (station !== "all" && track.station?.id !== station) return false;
+  if (els.favoritesOnly.checked && !track.favorite) return false;
+  if (!query) return true;
+  return [track.title, track.station?.name, track.language, track.brief?.theme, track.brief?.listenerRequest].some((value) => String(value || "").toLocaleLowerCase().includes(query));
+}
+
+function renderLibrary() {
+  els.libraryCount.textContent = String(state.library.length);
+  const selectedStation = els.libraryStationFilter.value || "all";
+  const stationOptions = [...new Map(state.library.map((track) => [track.station?.id, track.station?.name]).filter(([id]) => id)).entries()];
+  els.libraryStationFilter.innerHTML = `<option value="all">All stations</option>${stationOptions.map(([id, name]) => `<option value="${escapeHtml(id)}">${escapeHtml(name)}</option>`).join("")}`;
+  els.libraryStationFilter.value = stationOptions.some(([id]) => id === selectedStation) ? selectedStation : "all";
+  const visible = state.library.filter(libraryMatches);
+  els.emptyLibrary.hidden = visible.length > 0;
+  els.libraryList.innerHTML = visible.map((track) => {
+    const date = new Date(track.createdAt);
+    const createdAt = Number.isNaN(date.getTime()) ? "Saved locally" : date.toLocaleString([], { dateStyle: "short", timeStyle: "short" });
+    return `<li class="library-item" data-track-id="${escapeHtml(track.id)}">
+      <header><strong>${escapeHtml(track.title)}</strong><time>${escapeHtml(createdAt)}</time></header>
+      <p>${escapeHtml(track.station?.name || "Radio")} · ${escapeHtml(track.language)} · ${escapeHtml(track.brief?.tempo || "tempo not recorded")}</p>
+      <p>${escapeHtml(track.brief?.listenerRequest ? `Request: ${track.brief.listenerRequest}` : track.brief?.theme || "Original radio song")}</p>
+      <div class="library-actions">
+        <button type="button" data-library-action="play">PLAY</button>
+        <button type="button" class="${track.favorite ? "favorite" : ""}" data-library-action="favorite">${track.favorite ? "★ FAVORITE" : "☆ FAVORITE"}</button>
+        <button type="button" data-library-action="regenerate">REGENERATE</button>
+        <button type="button" data-library-action="export">EXPORT INFO</button>
+        <button type="button" class="danger" data-library-action="delete">DELETE</button>
+      </div>
+    </li>`;
+  }).join("");
+}
+
+async function restoreLocalLibrary() {
+  try {
+    state.library = await listTracks();
+    renderLibrary();
+    const session = await getAppState("session");
+    if (!session) return;
+    const byId = new Map(state.library.map((track) => [track.id, track]));
+    state.playQueue = (session.queueIds || []).map((id) => byId.get(id)).filter(Boolean);
+    const current = byId.get(session.currentTrackId);
+    if (current) {
+      await playTrack(current, { autoplay: false });
+      const restoreTime = () => { currentAudioElement().currentTime = Math.min(Number(session.currentTime) || 0, currentAudioElement().duration || Infinity); };
+      if (currentAudioElement().readyState >= 1) restoreTime();
+      else currentAudioElement().addEventListener("loadedmetadata", restoreTime, { once: true });
+      state.recoveryNotice = `Recovered ${state.playQueue.length} queued song${state.playQueue.length === 1 ? "" : "s"}`;
+    }
+    renderQueue();
+    if (session.pendingJobs?.length) {
+      state.recoveryNotice = `${state.recoveryNotice ? `${state.recoveryNotice} and ` : "Recovered "}${session.pendingJobs.length} interrupted generation job${session.pendingJobs.length === 1 ? "" : "s"}`;
+      setTimeout(() => scheduleQueueFill(0, { allowPausedPlayer: true }), 900);
+    }
+    if (state.recoveryNotice) showToast(`${state.recoveryNotice} · press Play to resume audio`);
+  } catch {
+    showToast("The local song library could not be opened");
+  }
+}
+
+function exportTrackMetadata(track) {
+  const data = { title: track.title, station: track.station, language: track.language, createdAt: track.createdAt, favorite: track.favorite, creativeBrief: track.brief, lyrics: track.lyrics };
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `${safeFileName(track.title)}.json`;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
 function safeFileName(value) {
@@ -801,11 +1177,9 @@ async function autoSaveTrack(track) {
   if (!state.autoSaveEnabled || !state.autoSaveDirectory || track.autoSaved) return;
   track.autoSaved = true;
   try {
-    const response = await fetch(track.audioUrl);
-    const blob = await response.blob();
     const file = await state.autoSaveDirectory.getFileHandle(autoSaveFileName(track), { create: true });
     const writable = await file.createWritable();
-    await writable.write(blob);
+    await writable.write(track.audioBlob || await (await fetch(ensureTrackUrl(track))).blob());
     await writable.close();
   } catch (error) {
     track.autoSaved = false;
@@ -817,9 +1191,9 @@ async function autoSaveTrack(track) {
 }
 
 function saveTrack(track) {
-  if (!track?.audioUrl) return showToast("No song file is ready yet");
+  if (!track?.audioBlob && !track?.audioUrl) return showToast("No song file is ready yet");
   const link = document.createElement("a");
-  link.href = track.audioUrl;
+  link.href = ensureTrackUrl(track);
   link.download = `${safeFileName(track.title)}.wav`;
   document.body.append(link);
   link.click();
@@ -835,36 +1209,60 @@ function showLyricsTab() {
   els.lyricsTab.classList.add("active");
   els.queueTab.classList.remove("active");
   els.historyTab.classList.remove("active");
+  els.libraryTab.classList.remove("active");
   els.lyricsTab.setAttribute("aria-selected", "true");
   els.queueTab.setAttribute("aria-selected", "false");
   els.historyTab.setAttribute("aria-selected", "false");
+  els.libraryTab.setAttribute("aria-selected", "false");
   els.lyricsPanel.hidden = false;
   els.queuePanel.hidden = true;
   els.historyPanel.hidden = true;
+  els.libraryPanel.hidden = true;
 }
 
 function showQueueTab() {
   els.queueTab.classList.add("active");
   els.lyricsTab.classList.remove("active");
   els.historyTab.classList.remove("active");
+  els.libraryTab.classList.remove("active");
   els.queueTab.setAttribute("aria-selected", "true");
   els.lyricsTab.setAttribute("aria-selected", "false");
   els.historyTab.setAttribute("aria-selected", "false");
+  els.libraryTab.setAttribute("aria-selected", "false");
   els.queuePanel.hidden = false;
   els.lyricsPanel.hidden = true;
   els.historyPanel.hidden = true;
+  els.libraryPanel.hidden = true;
 }
 
 function showHistoryTab() {
   els.historyTab.classList.add("active");
   els.lyricsTab.classList.remove("active");
   els.queueTab.classList.remove("active");
+  els.libraryTab.classList.remove("active");
   els.historyTab.setAttribute("aria-selected", "true");
   els.lyricsTab.setAttribute("aria-selected", "false");
   els.queueTab.setAttribute("aria-selected", "false");
+  els.libraryTab.setAttribute("aria-selected", "false");
   els.historyPanel.hidden = false;
   els.lyricsPanel.hidden = true;
   els.queuePanel.hidden = true;
+  els.libraryPanel.hidden = true;
+}
+
+function showLibraryTab() {
+  els.libraryTab.classList.add("active");
+  els.lyricsTab.classList.remove("active");
+  els.queueTab.classList.remove("active");
+  els.historyTab.classList.remove("active");
+  els.libraryTab.setAttribute("aria-selected", "true");
+  els.lyricsTab.setAttribute("aria-selected", "false");
+  els.queueTab.setAttribute("aria-selected", "false");
+  els.historyTab.setAttribute("aria-selected", "false");
+  els.libraryPanel.hidden = false;
+  els.lyricsPanel.hidden = true;
+  els.queuePanel.hidden = true;
+  els.historyPanel.hidden = true;
 }
 
 let toastTimer;
@@ -892,8 +1290,10 @@ function saveSettings() {
   };
   const customChanged = JSON.stringify(proposedCustom) !== JSON.stringify(state.customStation);
   state.customStation = proposedCustom;
+  state.crossfadeSeconds = Number(els.crossfadeSeconds.value) || 0;
   localStorage.setItem("radio-settings", JSON.stringify(state.settings));
   localStorage.setItem("radio-custom-station", JSON.stringify(state.customStation));
+  localStorage.setItem("radio-crossfade", String(state.crossfadeSeconds));
   if (customChanged) clearQueuedTracks({ invalidate: true });
   renderStations();
   if (state.tuningMode === "custom" && !isCustomConfigured()) {
@@ -953,7 +1353,7 @@ function registerWebMcp() {
       inputSchema: { type: "object", properties: {}, additionalProperties: false },
       annotations: { readOnlyHint: false, untrustedContentHint: true },
       async execute() {
-        if (state.generating) throw new Error("A song is already generating.");
+        if (state.activeJobs.size >= state.maxJobs) throw new Error("All generation jobs are busy.");
         const track = await makeSong({ autoplay: false });
         if (!track) throw new Error("Song generation did not complete.");
         return { station: track.station.name, language: track.language, title: track.title, status: state.playQueue.includes(track) ? "queued" : "ready" };
@@ -981,11 +1381,15 @@ els.settingsForm.addEventListener("submit", (event) => {
   state.customDraftAborter?.abort();
   if (event.submitter?.value !== "cancel") saveSettings();
 });
-els.generateButton.addEventListener("click", () => makeSong({ autoplay: true }));
+els.generateButton.addEventListener("click", async () => { await ensureAudioGraph().catch(() => false); makeSong({ autoplay: true }); });
 els.playButton.addEventListener("click", async () => {
-  if (state.generating) return;
-  if (!els.audioPlayer.src) return makeSong({ autoplay: true });
-  if (els.audioPlayer.paused) await els.audioPlayer.play(); else els.audioPlayer.pause();
+  await ensureAudioGraph().catch(() => false);
+  const player = currentAudioElement();
+  if (!player.src) {
+    if (!isGenerating()) return makeSong({ autoplay: true });
+    return;
+  }
+  if (player.paused) await player.play(); else player.pause();
 });
 els.cancelGeneration.addEventListener("click", () => {
   clearTimeout(state.prefetchTimer);
@@ -993,8 +1397,8 @@ els.cancelGeneration.addEventListener("click", () => {
   state.continuous = false;
   localStorage.setItem("radio-continuous", "off");
   syncContinuousToggle();
-  state.aborter?.abort();
-  showToast("Generation cancelled · continuous fill paused");
+  for (const job of state.activeJobs.values()) job.controller.abort();
+  showToast("All generation jobs cancelled · continuous fill paused");
 });
 els.continuousToggle.addEventListener("click", () => {
   state.continuous = !state.continuous;
@@ -1006,48 +1410,91 @@ els.continuousToggle.addEventListener("click", () => {
   } else {
     clearTimeout(state.prefetchTimer);
     state.prefetchTimer = null;
-    if (state.generationMode === "background") state.aborter?.abort();
     showToast("Continuous play off");
   }
 });
 els.queueTarget.addEventListener("change", () => {
-  state.queueTarget = Math.min(3, Math.max(1, Number(els.queueTarget.value) || 2));
+  state.queueTarget = Math.min(5, Math.max(1, Number(els.queueTarget.value) || 2));
   els.queueTarget.value = String(state.queueTarget);
   localStorage.setItem("radio-queue-target", String(state.queueTarget));
   renderQueue();
   scheduleQueueFill(50);
 });
-els.volumeControl.addEventListener("input", () => { els.audioPlayer.volume = Number(els.volumeControl.value); });
+els.maxJobs.addEventListener("change", () => {
+  state.maxJobs = Math.min(2, Math.max(1, Number(els.maxJobs.value) || 1));
+  localStorage.setItem("radio-max-jobs", String(state.maxJobs));
+  scheduleQueueFill(0);
+});
+els.varietyLevel.addEventListener("change", () => {
+  state.varietyLevel = els.varietyLevel.value;
+  localStorage.setItem("radio-variety", state.varietyLevel);
+  showToast(`Variety set to ${state.varietyLevel}`);
+});
+els.generationPause.addEventListener("click", () => {
+  state.generationPaused = !state.generationPaused;
+  localStorage.setItem("radio-generation-paused", state.generationPaused ? "on" : "off");
+  syncGenerationPause();
+  if (state.generationPaused) showToast("Queue filling paused; music keeps playing");
+  else { showToast("Queue filling resumed"); scheduleQueueFill(0); }
+});
+els.requestForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const topic = els.requestTopic.value.trim();
+  if (!topic) return;
+  state.requests.push({ id: crypto.randomUUID(), topic, createdAt: new Date().toISOString(), status: "pending", reservedBy: null });
+  els.requestTopic.value = "";
+  persistRequests();
+  renderRequests();
+  showToast("Request added to an upcoming song");
+  scheduleQueueFill(0);
+});
+els.volumeControl.addEventListener("input", () => {
+  const volume = Number(els.volumeControl.value);
+  if (state.masterGain) state.masterGain.gain.value = volume;
+  else for (const deck of audioDecks()) deck.volume = volume;
+});
 els.languageSelect.addEventListener("change", () => {
   clearQueuedTracks({ invalidate: true });
   localStorage.setItem("radio-language", els.languageSelect.value);
   els.lyricsLanguage.textContent = languageCodes[els.languageSelect.value] || els.languageSelect.value.toUpperCase();
   showToast(`Vocals set to ${els.languageSelect.options[els.languageSelect.selectedIndex].text}`);
-  if (state.continuous && !els.audioPlayer.paused) scheduleQueueFill();
+  if (state.continuous && !currentAudioElement().paused) scheduleQueueFill();
 });
-els.audioPlayer.addEventListener("play", () => {
-  els.playButton.classList.add("playing");
-  els.waveform.classList.add("active");
-  scheduleQueueFill();
-});
-els.audioPlayer.addEventListener("pause", () => { els.playButton.classList.remove("playing"); els.waveform.classList.remove("active"); });
-els.audioPlayer.addEventListener("ended", () => {
-  els.playButton.classList.remove("playing");
-  els.waveform.classList.remove("active");
-  archiveCurrentTrack();
-  continuePlayback();
-});
-els.audioPlayer.addEventListener("timeupdate", updateProgress);
-els.audioPlayer.addEventListener("durationchange", updateProgress);
+for (const deck of audioDecks()) {
+  deck.addEventListener("play", (event) => {
+    if (event.currentTarget !== currentAudioElement()) return;
+    els.playButton.classList.add("playing");
+    els.waveform.classList.add("active");
+    scheduleQueueFill();
+    scheduleSessionSave();
+  });
+  deck.addEventListener("pause", (event) => {
+    if (event.currentTarget !== currentAudioElement() || state.crossfading) return;
+    els.playButton.classList.remove("playing");
+    els.waveform.classList.remove("active");
+    scheduleSessionSave();
+  });
+  deck.addEventListener("ended", (event) => {
+    if (event.currentTarget !== currentAudioElement() || state.crossfading) return;
+    els.playButton.classList.remove("playing");
+    els.waveform.classList.remove("active");
+    archiveCurrentTrack();
+    continuePlayback();
+  });
+  deck.addEventListener("timeupdate", updateProgress);
+  deck.addEventListener("durationchange", updateProgress);
+}
 els.progressTrack.addEventListener("click", (event) => setProgress(event.clientX));
 els.progressTrack.addEventListener("keydown", (event) => {
-  if (!["ArrowLeft", "ArrowRight"].includes(event.key) || !Number.isFinite(els.audioPlayer.duration)) return;
+  const player = currentAudioElement();
+  if (!["ArrowLeft", "ArrowRight"].includes(event.key) || !Number.isFinite(player.duration)) return;
   event.preventDefault();
-  els.audioPlayer.currentTime = Math.min(els.audioPlayer.duration, Math.max(0, els.audioPlayer.currentTime + (event.key === "ArrowRight" ? 5 : -5)));
+  player.currentTime = Math.min(player.duration, Math.max(0, player.currentTime + (event.key === "ArrowRight" ? 5 : -5)));
 });
 els.lyricsTab.addEventListener("click", showLyricsTab);
 els.queueTab.addEventListener("click", showQueueTab);
 els.historyTab.addEventListener("click", showHistoryTab);
+els.libraryTab.addEventListener("click", showLibraryTab);
 els.copyLyrics.addEventListener("click", async () => {
   if (!state.lyrics) return showToast("Generate lyrics first");
   await navigator.clipboard.writeText(state.lyrics);
@@ -1060,10 +1507,50 @@ els.queueList.addEventListener("click", (event) => {
   if (!button) return;
   saveTrack(state.playQueue[Number(button.dataset.queueSave)]);
 });
-window.addEventListener("beforeunload", () => {
-  if (state.audioUrl) URL.revokeObjectURL(state.audioUrl);
-  state.playQueue.forEach((track) => URL.revokeObjectURL(track.audioUrl));
+els.librarySearch.addEventListener("input", renderLibrary);
+els.libraryStationFilter.addEventListener("change", renderLibrary);
+els.favoritesOnly.addEventListener("change", renderLibrary);
+els.libraryList.addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-library-action]");
+  const item = event.target.closest("[data-track-id]");
+  const track = state.library.find((candidate) => candidate.id === item?.dataset.trackId);
+  if (!button || !track) return;
+  const action = button.dataset.libraryAction;
+  if (action === "play") {
+    await ensureAudioGraph().catch(() => false);
+    await playTrack(track, { autoplay: true });
+  } else if (action === "favorite") {
+    track.favorite = !track.favorite;
+    await persistCompletedTrack(track);
+  } else if (action === "export") exportTrackMetadata(track);
+  else if (action === "regenerate") {
+    const stationIndex = stations.findIndex((station) => station.id === track.station?.id);
+    if (stationIndex >= 0) selectStation(stationIndex);
+    else if (track.station?.id === "custom" && isCustomConfigured()) selectCustomMode();
+    state.requests.unshift({ id: crypto.randomUUID(), topic: `A fresh variation on ${track.brief?.theme || track.title}`, createdAt: new Date().toISOString(), status: "pending", reservedBy: null });
+    persistRequests();
+    renderRequests();
+    makeSong({ autoplay: false });
+  } else if (action === "delete") {
+    if (!confirm(`Delete “${track.title}” from this device? This cannot be undone.`)) return;
+    state.playQueue = state.playQueue.filter((itemTrack) => itemTrack.id !== track.id);
+    if (state.currentTrack?.id === track.id) {
+      currentAudioElement().pause();
+      currentAudioElement().removeAttribute("src");
+      state.currentTrack = null;
+      state.lyrics = "";
+      els.trackTitle.textContent = "Ready for a new transmission";
+      els.saveSong.disabled = true;
+    }
+    if (track.audioUrl) URL.revokeObjectURL(track.audioUrl);
+    await deleteStoredTrack(track.id);
+    state.library = state.library.filter((itemTrack) => itemTrack.id !== track.id);
+    renderLibrary();
+    renderQueue();
+    scheduleSessionSave(0);
+  }
 });
+window.addEventListener("beforeunload", () => { putAppState("session", sessionSnapshot()).catch(() => {}); });
 
 [...els.waveform.children].forEach((bar, index) => bar.style.setProperty("--i", index + 1));
 loadPreferences();
@@ -1072,5 +1559,7 @@ else if (state.tuningMode === "custom") selectCustomMode({ announce: false });
 else selectStation(state.stationIndex, { announce: false });
 renderQueue();
 renderHistory();
+renderLibrary();
 registerWebMcp();
+restoreLocalLibrary();
 setTimeout(() => testConnections({ quiet: true }), 500);

@@ -10,7 +10,7 @@
     />
     <title>Radio — Local AI airwaves</title>
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%2311110f'/%3E%3Ccircle cx='32' cy='32' r='19' fill='none' stroke='%23ff4d32' stroke-width='5'/%3E%3Ccircle cx='32' cy='32' r='6' fill='%23f4efe3'/%3E%3Cpath d='M32 5v8M32 51v8M5 32h8M51 32h8' stroke='%23f4efe3' stroke-width='4' stroke-linecap='round'/%3E%3C/svg%3E" />
-    <link rel="stylesheet" href="./styles.css?v=0.6.0" />
+    <link rel="stylesheet" href="./styles.css?v=0.7.0" />
   </head>
   <body>
     <div class="shell">
@@ -108,6 +108,16 @@
             <div class="status-progress"><i></i></div>
           </div>
 
+          <section class="radio-desk" aria-label="Radio desk">
+            <form class="request-form" id="requestForm">
+              <label for="requestTopic"><span>SONG REQUEST</span><small id="requestCount">No requests waiting</small></label>
+              <div><input id="requestTopic" type="text" maxlength="140" placeholder="A topic for an upcoming song…" /><button type="submit">ADD</button></div>
+            </form>
+            <label class="desk-select" for="varietyLevel"><span>VARIETY</span><select id="varietyLevel"><option value="focused">Focused</option><option value="balanced" selected>Balanced</option><option value="experimental">Experimental</option></select></label>
+            <label class="desk-select" for="maxJobs"><span>JOBS</span><select id="maxJobs"><option value="1" selected>1 at once</option><option value="2">2 at once</option></select></label>
+            <button class="generation-pause" id="generationPause" type="button" aria-pressed="false">PAUSE FILL</button>
+          </section>
+
           <div class="player-footer">
             <label class="language-field" for="languageSelect">
               <span>VOCALS</span>
@@ -137,6 +147,8 @@
                   <option value="1">1</option>
                   <option value="2" selected>2</option>
                   <option value="3">3</option>
+                  <option value="4">4</option>
+                  <option value="5">5</option>
                 </select>
               </label>
               <label class="volume-field" for="volumeControl">
@@ -147,6 +159,7 @@
           </div>
 
           <audio id="audioPlayer" preload="metadata"></audio>
+          <audio id="crossfadePlayer" preload="metadata"></audio>
         </section>
 
         <aside class="details-panel">
@@ -154,6 +167,7 @@
             <button class="active" id="lyricsTab" type="button" role="tab" aria-selected="true" aria-controls="lyricsPanel">LYRICS</button>
             <button id="queueTab" type="button" role="tab" aria-selected="false" aria-controls="queuePanel">QUEUE <span id="queueCount">0</span></button>
             <button id="historyTab" type="button" role="tab" aria-selected="false" aria-controls="historyPanel">HISTORY <span id="historyCount">0</span></button>
+            <button id="libraryTab" type="button" role="tab" aria-selected="false" aria-controls="libraryPanel">LIBRARY <span id="libraryCount">0</span></button>
           </div>
 
           <section class="lyrics-panel" id="lyricsPanel" role="tabpanel" aria-labelledby="lyricsTab">
@@ -187,6 +201,16 @@
               <p>No previous songs yet.<br />Finished songs appear here.</p>
             </div>
             <ol id="historyList"></ol>
+          </section>
+
+          <section class="library-panel" id="libraryPanel" role="tabpanel" aria-labelledby="libraryTab" hidden>
+            <div class="library-tools">
+              <input id="librarySearch" type="search" placeholder="Search saved songs…" aria-label="Search saved songs" />
+              <select id="libraryStationFilter" aria-label="Filter library by station"><option value="all">All stations</option></select>
+              <label><input id="favoritesOnly" type="checkbox" /> Favorites</label>
+            </div>
+            <div class="empty-history" id="emptyLibrary"><span>00</span><p>Your completed songs will appear here.<br />Audio and details stay on this device.</p></div>
+            <ol id="libraryList"></ol>
           </section>
 
           <div class="model-credit">
@@ -228,6 +252,10 @@
           <label class="setting-field" for="audioModel">
             <span><b>Yue2 model ID</b><small>Must match the ID in server.json</small></span>
             <input id="audioModel" type="text" value="yue2-radio" spellcheck="false" />
+          </label>
+          <label class="setting-field" for="crossfadeSeconds">
+            <span><b>Crossfade</b><small>Smooth overlap between queued songs</small></span>
+            <select id="crossfadeSeconds"><option value="0">Off</option><option value="3">3 seconds</option><option value="5" selected>5 seconds</option><option value="8">8 seconds</option></select>
           </label>
           <div class="connection-result" id="connectionResult" role="status" aria-live="polite">Ready to test both services.</div>
         </section>
@@ -278,6 +306,6 @@
 
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
-    <script src="./app.js?v=0.6.0" type="module"></script>
+    <script src="./app.js?v=0.7.0" type="module"></script>
   </body>
 </html>
