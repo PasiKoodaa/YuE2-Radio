@@ -22,9 +22,10 @@ No cloud API key is required. The language model, music model, generated lyrics,
 - Yue2 audio generation is retried up to three times after recoverable failures.
 - Continuous mode prepares a configurable queue of 1–3 finished songs while the current song plays.
 - Separate Queue and History tabs; History remembers the last 25 previous songs locally.
-- Save the current song or any queued song as a WAV file.
+- Save the current song or any queued song as a WAV file, or choose a folder to auto-save every completed song.
 - Cancel stops the active request and pauses automatic queue filling.
 - Guided Windows 10 setup with Q4 and Q8 Yue2 download options.
+- LM-assisted Custom Radio setup fills only fields you leave blank.
 - Dependency-free Node.js app server for Windows, macOS, and Linux.
 
 ## How it works
